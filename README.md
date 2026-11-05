@@ -44,8 +44,13 @@ you and your models: bring one API key, the Claude or ChatGPT plan you already
 pay for, or a local model. Every action that could change your system waits for
 your approval.
 
-## Install
+## Amala profile
 
+This fork includes the **Amala** Windows voice-assistant profile: custom wake
+phrase, offline speech, Codex brain, computer control and autostart. See
+[AMALA.md](AMALA.md) for features and run `install/amala.ps1` after installation.
+
+## Install
 ```powershell
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/Dodaios/Dodaios/main/install/install.ps1 | iex
