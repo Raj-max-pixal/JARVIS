@@ -2010,8 +2010,9 @@ def _extract_leaked_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
 # Single source of truth for the reply-language vocabulary (Python ↔ REST ↔ TS).
 # "auto" = mirror the user's input language; the rest hard-pin that language.
 SUPPORTED_REPLY_LANGUAGES: tuple[str, ...] = ("auto", *SUPPORTED_LOCALES)
-_REPLY_LANGS: frozenset[str] = frozenset(SUPPORTED_REPLY_LANGUAGES)
-_REPLY_LANG_NAMES: dict[str, str] = dict(SUPPORTED_LANGUAGE_NAMES)
+# French speech can be pinned in configuration without adding a translated UI.
+_REPLY_LANGS: frozenset[str] = frozenset((*SUPPORTED_REPLY_LANGUAGES, "fr"))
+_REPLY_LANG_NAMES: dict[str, str] = {**SUPPORTED_LANGUAGE_NAMES, "fr": "French"}
 
 # Spoken confirmation for a deterministic reply-language switch (the
 # voice_command_gate "language_switch" path). Keyed by target code and phrased
@@ -2324,6 +2325,58 @@ def _turn_phrase_language(owner: object, user_text: str) -> str:
     )
 
 
+def _is_local_provider(provider: str | None) -> bool:
+    """True for an on-device provider (no key, no price list)."""
+    try:
+        from dodaios.brain.app_control import LOCAL_PROVIDERS
+    except Exception:  # noqa: BLE001 — pricing must never break a turn
+        return False
+    return bool(provider) and provider in LOCAL_PROVIDERS
+
+
+async def _turn_cost_usd(
+    provider: str | None,
+    model: str | None,
+    tokens_in: int,
+    tokens_out: int,
+    tokens_cached: int,
+) -> float:
+    """USD cost of one completed brain turn; never raises."""
+    # On-device models are free and absent from every price list; pricing
+    # them warned on every turn and refreshed a remote catalogue for nothing.
+    if _is_local_provider(provider):
+        return 0.0
+    try:
+        from dodaios.brain import cost
+
+        # A model the static table has never heard of is priced
+        # from the provider feed — ONE refresh per model per
+        # process (capped at 3 s), so a new generation stops
+        # shipping as "$0.00" until someone edits the table.
+        if tokens_in > 0 or tokens_out > 0 or tokens_cached > 0:
+            await cost.ensure_pricing_for(model)
+        usd = cost.calculate_cost_usd(model, tokens_in, tokens_out, tokens_cached)
+        if usd == 0.0 and tokens_in > 0:
+            # An unknown model prices as $0.00 and every surface
+            # then renders the turn as free — that silence is how
+            # 1.87M deepseek tokens went unbilled for a month
+            # (2026-07-28 cost audit). Say it once per turn.
+            log.warning(
+                "No pricing for model %r (static table and "
+                "provider feed) — %d in / %d out tokens recorded "
+                "as $0.00; add it to dodaios/brain/cost.py "
+                "PRICING_USD_PER_MTOK",
+                model, tokens_in, tokens_out,
+            )
+        return usd
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "Cost calculation failed for model %r — recording $0.00",
+            model, exc_info=True,
+        )
+        return 0.0
+
+
 class BrainManager:
     """Top-level orchestrator with intent router and smart fallback."""
 
@@ -2358,6 +2411,9 @@ class BrainManager:
         )
         self._core_memory = core_memory
         self._recall = recall
+        # The message recorder the factory attached to the bus for this brain,
+        # detached again by aclose() (see own_message_recorder).
+        self._message_recorder: tuple[Any, Any] | None = None
         self._tools = tools or {}
         self._local_action_tools = dict(local_action_tools or {})
         self._tool_executor = tool_executor
@@ -4230,6 +4286,17 @@ class BrainManager:
             parts.append(agentic_block)
         return "\n\n".join(p for p in parts if p)
 
+    @staticmethod
+    async def _vault_recall(user_text: str) -> str:
+        """Per-message memory recall, bounded to 150 ms so a busy disk never stalls a turn."""
+        from dodaios.memory.vault.runtime import turn_block
+
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(turn_block, user_text), timeout=0.15)
+        except TimeoutError:
+            log.info("memory vault: per-message recall skipped (over 150 ms)")
+            return ""
+
     def _upcoming_block(self) -> str:
         """Dated plans from the notebooks for the next two weeks (initiative grounding).
 
@@ -4736,6 +4803,34 @@ class BrainManager:
         """
         self._jarvis_agent_status_fn = status_fn
         self._jarvis_agent_cancel_fn = cancel_fn
+
+    def own_message_recorder(self, recorder: Any, bus: Any) -> None:
+        """Take ownership of the recorder the factory attached to ``bus``."""
+        self._message_recorder = (recorder, bus)
+
+    async def aclose(self) -> None:
+        """Release what this brain owns: its message recorder and its store.
+
+        A brain built for one browser voice session used to keep both forever:
+        the recorder stayed on the shared bus (every later answer was recorded
+        once more per past session) and the store's aiosqlite connection, which
+        runs on a non-daemon thread, kept the process from exiting at shutdown.
+        Idempotent; never raises.
+        """
+        owned = getattr(self, "_message_recorder", None)
+        self._message_recorder = None
+        if owned is not None:
+            recorder, bus = owned
+            try:
+                recorder.detach(bus)
+            except Exception:  # noqa: BLE001 — closing must never raise
+                log.debug("message recorder detach failed", exc_info=True)
+        recall = getattr(self, "_recall", None)
+        if recall is not None and callable(getattr(recall, "close", None)):
+            try:
+                await recall.close()
+            except Exception:  # noqa: BLE001 — closing must never raise
+                log.debug("recall store close failed", exc_info=True)
 
     def _live_tool_names(self) -> tuple[str, ...]:
         """Names of every tool attached RIGHT NOW — the honest-refusal evidence.
@@ -5529,6 +5624,25 @@ class BrainManager:
             if isinstance(content, str) and content.strip():
                 return content.strip()[-1_200:]
         return ""
+
+    def _recent_user_turn_texts(self, count: int, *, use_history: bool) -> tuple[str, ...]:
+        """The last ``count`` user messages of this task's history, newest first."""
+        override = _TURN_HISTORY_OVERRIDE.get()
+        history = (
+            tuple(override)
+            if override is not None
+            else tuple(self._history if use_history else ())
+        )
+        found: list[str] = []
+        for message in reversed(history):
+            if len(found) >= count:
+                break
+            if getattr(message, "role", None) != "user":
+                continue
+            content = getattr(message, "content", "")
+            if isinstance(content, str) and content.strip():
+                found.append(content.strip()[-1_200:])
+        return tuple(found)
 
     def _contextual_routing_state(
         self, user_text: str, *, use_history: bool
@@ -10220,9 +10334,9 @@ class BrainManager:
             if fast:
                 chain.append((active, fast))
 
-        # Model-less local providers own model discovery. Keep the selected
-        # provider on the chain so its plugin can choose an installed model.
-        if not fast and not deep and active in ("ollama", "local-openai"):
+        # A registered provider may own its default model (local discovery or
+        # a subscription CLI's account default). Keep that choice on the chain.
+        if not fast and not deep and active in self._registry.available():
             chain.append((active, None))
 
         # 2. Explicit tier fallbacks from jarvis.toml. These must run before
@@ -10701,6 +10815,7 @@ class BrainManager:
         self._evidence_required_tool = ""
         self._evidence_required_is_write = False
         self._evidence_required_domain = ""
+        self._public_fact_prefetched = False
         # AD-S4: a trigger noted by the speech pipeline / chat hook takes
         # precedence — it carries the captured content and the source label.
         self._consume_pending_skill_trigger(user_text)
@@ -11170,6 +11285,102 @@ class BrainManager:
                 self._evidence_required_domain = "routine"
                 log.info("Recurring-work intent — mandating society-create-routine")
 
+        # A small on-device model answers public-fact questions from an
+        # unreliable memory and often skips search_web (live 2026-10-28: an
+        # invented train story with "[used tool search_web]" typed as text).
+        # Mandate the search for those turns; the backstop below keeps a short
+        # clarifying question and replaces any unsearched claim.
+        if not self._evidence_required_tool and self._skill_turn_match is None:
+            from dodaios.brain.app_control import LOCAL_PROVIDERS
+            from dodaios.brain.public_fact_gate import (
+                PUBLIC_FACT_DOMAIN,
+                SEARCH_TOOL,
+                public_fact_search_directive,
+            )
+
+            _pf_override = _TURN_OVERRIDE.get()
+            _pf_provider = (
+                str(getattr(_pf_override, "provider", "") or "")
+                if _pf_override is not None
+                else ""
+            ) or str(getattr(self._config.brain, "primary", "") or "")
+            _pf_directive = public_fact_search_directive(
+                user_text,
+                provider=_pf_provider,
+                tool_names=self._live_tool_names(),
+                previous_user_text=self._previous_user_turn_text(use_history=use_history),
+                local_providers=LOCAL_PROVIDERS,
+            )
+            if _pf_directive is not None:
+                self._evidence_directive = _pf_directive
+                self._evidence_required_tool = SEARCH_TOOL
+                self._evidence_required_domain = PUBLIC_FACT_DOMAIN
+                log.info(
+                    "Public-fact guard: on-device provider %s — mandating %s this turn",
+                    _pf_provider,
+                    SEARCH_TOOL,
+                )
+                # The small model calls the tool only now and then; run the one
+                # search here and hand it the results (the realtime grounding).
+                # A question naming no event ("an accident?") borrows its
+                # subject from the last turns, or is answered with a question.
+                from dodaios.brain.public_fact_gate import (
+                    PUBLIC_FACT_CLARIFY_DIRECTIVE,
+                    PUBLIC_FACT_CLARIFY_DOMAIN,
+                    prefetch_public_fact_evidence,
+                    public_fact_evidence_directive,
+                    public_fact_search_query,
+                )
+
+                _pf_query = public_fact_search_query(
+                    user_text, self._recent_user_turn_texts(2, use_history=use_history)
+                )
+                if _pf_query is None:
+                    self._evidence_directive = PUBLIC_FACT_CLARIFY_DIRECTIVE
+                    self._evidence_required_domain = PUBLIC_FACT_CLARIFY_DOMAIN
+                else:
+                    _pf_evidence = await prefetch_public_fact_evidence(
+                        _pf_query, trace_id=turn_trace_id
+                    )
+                    if _pf_evidence is not None:
+                        self._evidence_directive = public_fact_evidence_directive(_pf_evidence)
+                        self._public_fact_prefetched = True
+            elif not self._evidence_directive:
+                # A hosted model without tools (the print-mode Claude CLI) cannot
+                # search either (BC-250 2026-10-29: "je ne peux pas faire de
+                # recherche en direct ici" about the latest Artemis II news). Run
+                # the search for an explicitly fresh public fact and hand it the
+                # results; its own answer is never replaced afterwards. The cheap
+                # text check runs first: the capability probe builds the primary
+                # brain, which only a turn that needs a search may do.
+                from dodaios.brain.public_fact_gate import (
+                    hosted_fresh_fact_query,
+                    prefetch_public_fact_evidence,
+                    public_fact_evidence_directive,
+                )
+
+                _pf_query = hosted_fresh_fact_query(
+                    user_text,
+                    provider=_pf_provider,
+                    local_providers=LOCAL_PROVIDERS,
+                    previous_user_text=self._previous_user_turn_text(use_history=use_history),
+                    recent_user_texts=self._recent_user_turn_texts(2, use_history=use_history),
+                )
+                if _pf_query is not None and not self._brain_can_call_tools(
+                    _pf_provider, self._fast_model(_pf_provider)
+                ):
+                    _pf_evidence = await prefetch_public_fact_evidence(
+                        _pf_query, trace_id=turn_trace_id
+                    )
+                    if _pf_evidence is not None:
+                        self._evidence_directive = public_fact_evidence_directive(_pf_evidence)
+                        log.info(
+                            "Public-fact search: tool-less provider %s answers from a "
+                            "system-run %s",
+                            _pf_provider,
+                            SEARCH_TOOL,
+                        )
+
         # Phase 5 / ADR-0006: pre-call budget gate. Block rather than request
         # when cooldown is active or the task/daily budget is exhausted.
         trace_uuid = turn_trace_id
@@ -11328,6 +11539,18 @@ class BrainManager:
             # Any unexpected error in the injector must never crash a voice turn.
             log.warning("WikiContextInjector raised unexpectedly — skipping", exc_info=True)
             self._wiki_context_suffix = ""
+
+        # Personal memory vault (ADR-0044): memories that match this message and
+        # are not in the always-on block ride along in the same per-turn slot.
+        if not (
+            turn_override is not None
+            and turn_override.tool_context.get("tool_origin") == "society"
+        ):
+            recalled = await self._vault_recall(user_text)
+            if recalled:
+                self._wiki_context_suffix = "\n\n".join(
+                    p for p in (self._wiki_context_suffix.strip(), recalled) if p
+                )
 
         # Wave 2 (omni-latency): assemble the per-turn dynamic context (date +
         # wiki) once. In cache-optimized mode it rides on the user
@@ -11855,38 +12078,9 @@ class BrainManager:
                 # Every plugin reports cache hits under the protocol key and
                 # keeps ``input_tokens`` to the uncached share.
                 tokens_cached_total = int(agg.usage.get("cache_hit_tokens", 0)) if agg.usage else 0
-                cost_usd_total = 0.0
-                try:
-                    from dodaios.brain.cost import (
-                        calculate_cost_usd,
-                        ensure_pricing_for,
-                    )
-                    # A model the static table has never heard of is priced
-                    # from the provider feed — ONE refresh per model per
-                    # process (capped at 3 s), so a new generation stops
-                    # shipping as "$0.00" until someone edits the table.
-                    if tokens_in_total > 0 or tokens_out_total > 0 or tokens_cached_total > 0:
-                        await ensure_pricing_for(model)
-                    cost_usd_total = calculate_cost_usd(
-                        model, tokens_in_total, tokens_out_total, tokens_cached_total
-                    )
-                    if cost_usd_total == 0.0 and tokens_in_total > 0:
-                        # An unknown model prices as $0.00 and every surface
-                        # then renders the turn as free — that silence is how
-                        # 1.87M deepseek tokens went unbilled for a month
-                        # (2026-07-28 cost audit). Say it once per turn.
-                        log.warning(
-                            "No pricing for model %r (static table and "
-                            "provider feed) — %d in / %d out tokens recorded "
-                            "as $0.00; add it to dodaios/brain/cost.py "
-                            "PRICING_USD_PER_MTOK",
-                            model, tokens_in_total, tokens_out_total,
-                        )
-                except Exception:  # noqa: BLE001
-                    log.warning(
-                        "Cost calculation failed for model %r — recording $0.00",
-                        model, exc_info=True,
-                    )
+                cost_usd_total = await _turn_cost_usd(
+                    prov_name, model, tokens_in_total, tokens_out_total, tokens_cached_total
+                )
                 await self._bus.publish(BrainTurnStarted(
                     provider=prov_name,
                     model=model,
@@ -12090,15 +12284,48 @@ class BrainManager:
         # answer a mandated read tool was supposed to ground. Shared-loop leak
         # recovery has already populated ``_turn_executed`` when it succeeded.
         if self._evidence_required_tool:
-            _replacement = _unfulfilled_replacement(
-                required_tool=self._evidence_required_tool,
-                executed=_turn_executed,
-                response_text=response_text,
-                suppressed=self._last_turn_suppressed,
-                is_write=self._evidence_required_is_write,
-                lang=honesty_lang,
-                domain=self._evidence_required_domain,
+            from dodaios.brain.public_fact_gate import (
+                PUBLIC_FACT_CLARIFY_DOMAIN,
+                PUBLIC_FACT_DOMAIN,
+                public_fact_answer_unverified,
+                public_fact_clarifying_question,
+                public_fact_unfulfilled_answer,
             )
+
+            if self._evidence_required_domain == PUBLIC_FACT_CLARIFY_DOMAIN:
+                # Too vague to search: ask, in the conversation's language (the
+                # small model asked its own question in English on 2026-10-28).
+                _replacement = (
+                    None
+                    if self._last_turn_suppressed
+                    else public_fact_clarifying_question(honesty_lang)
+                )
+            elif self._evidence_required_domain == PUBLIC_FACT_DOMAIN:
+                # The system search grounds the fact check only. It is not a
+                # tool the model ran, so it must not silence the action-honesty
+                # gate later in this turn.
+                _fact_executed = _turn_executed
+                if getattr(self, "_public_fact_prefetched", False):
+                    _fact_executed = {*_turn_executed, self._evidence_required_tool}
+                _replacement = (
+                    public_fact_unfulfilled_answer(honesty_lang)
+                    if public_fact_answer_unverified(
+                        response_text,
+                        executed=_fact_executed,
+                        suppressed=self._last_turn_suppressed,
+                    )
+                    else None
+                )
+            else:
+                _replacement = _unfulfilled_replacement(
+                    required_tool=self._evidence_required_tool,
+                    executed=_turn_executed,
+                    response_text=response_text,
+                    suppressed=self._last_turn_suppressed,
+                    is_write=self._evidence_required_is_write,
+                    lang=honesty_lang,
+                    domain=self._evidence_required_domain,
+                )
             if _replacement is not None:
                 log.warning(
                     "Mandated tool %s never ran (executed=%s, write=%s) — "
@@ -12110,6 +12337,33 @@ class BrainManager:
                 response_text = _replacement
                 if turn_override is not None:
                     turn_override.receipt.mark_guard_failure("mandated_tool_unfulfilled")
+
+        # A "[used tool …]" line in the model's text is an imitation of the
+        # chat history marker, never a call (live 2026-10-28: an invented train
+        # story behind "[used tool search_web]"). A claimed search that never
+        # ran makes the whole answer a guess; any other marker is dropped.
+        from dodaios.brain.tool_marker import strip_tool_markers
+
+        _marker_free, _claimed_tools = strip_tool_markers(response_text)
+        if _claimed_tools:
+            _marker_executed = _turn_executed
+            if getattr(self, "_public_fact_prefetched", False):
+                _marker_executed = {*_turn_executed, "search_web"}
+            _phantom = sorted(set(_claimed_tools) - set(_marker_executed))
+            if "search_web" in _phantom:
+                from dodaios.brain.public_fact_gate import public_fact_unfulfilled_answer
+
+                log.warning(
+                    "Model typed a search_web marker but no search ran — "
+                    "replacing the unverified answer."
+                )
+                response_text = public_fact_unfulfilled_answer(honesty_lang)
+                if turn_override is not None:
+                    turn_override.receipt.mark_guard_failure("unbacked_action_claim")
+            else:
+                if _phantom:
+                    log.warning("Model typed markers for tools that never ran: %s", _phantom)
+                response_text = _marker_free
 
         execution_evidence = set(_turn_executed)
         full_action_fallback = not execution_evidence and has_unbacked_action_claim(response_text)

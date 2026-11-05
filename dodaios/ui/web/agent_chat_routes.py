@@ -1014,7 +1014,8 @@ def _title_chats(request: Request, svc: Any, rows: list[dict[str, Any]]) -> None
     The ``jarvis`` surface — the front page's own history — and the ``agent``
     surface — the IDE's threads — are retitled. A thread whose coding CLI named
     the conversation itself keeps that name (``cli_title``); Claude Code in
-    print mode never writes one, so most threads are named here. A title the
+    print mode never writes one, so most threads are named here — right after
+    their first message, the way the CLI names a terminal pane. A title the
     user typed is recognised by the titler and kept.
     """
     from dodaios.agent_chat.store import _title_from
@@ -1052,6 +1053,9 @@ def _title_chats(request: Request, svc: Any, rows: list[dict[str, Any]]) -> None
             seed=str(row.get("title") or ""),
             loader=load,
             auto_title=_title_from,
+            # A thread is named a moment after its first message, as its CLI
+            # names a terminal pane — not only once the agent has gone quiet.
+            name_early=surface == "agent",
         ))
     if not requests:
         return
@@ -1672,6 +1676,7 @@ async def attach_files(
     paths: str | None = Form(default=None),  # noqa: B008
     session_id: str | None = Form(default=None),  # noqa: B008
     cwd: str | None = Form(default=None),  # noqa: B008
+    voice_session_id: str | None = Form(default=None),  # noqa: B008
     provider: str = Form(default=""),  # noqa: B008
     surface: str = Form(default="agent"),  # noqa: B008
 ) -> dict[str, Any]:
@@ -1699,6 +1704,18 @@ async def attach_files(
     attach works before the first message, when no session exists yet.
     """
     svc = (await _async_service(request))
+    if voice_session_id:
+        from dodaios.live.runtime import active
+        from dodaios.ui.web.live_routes import _composer_cwd
+
+        voice_session = next(
+            (s for s in active()
+             if s.session_id == voice_session_id and s.is_active and s.composer_available),
+            None,
+        )
+        if voice_session is None:
+            raise HTTPException(409, "The selected voice call is no longer available.")
+        session_id, cwd, surface = None, await _composer_cwd(request, voice_session), "jarvis"
     folder = ""
     if session_id:
         session = svc.store.get_session(session_id)
@@ -1726,6 +1743,7 @@ async def attach_files(
             paths=(paths or "").splitlines(),
             uploads=uploads,
             provider=provider,
+            always_copy=bool(voice_session_id),
         )
     except chat_attachments.AttachmentError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

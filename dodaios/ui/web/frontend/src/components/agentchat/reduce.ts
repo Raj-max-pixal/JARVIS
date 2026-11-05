@@ -4,6 +4,9 @@ import { hideAskBlocks } from "./askFence";
 import { hideMeetingPass } from "./meetingPass";
 import { readToolChoices, type ToolChoice } from "./toolChoices";
 import { parseApprovalCard, parseSavedRule, type ApprovalCardInfo, type RuleScope, type SavedApprovalRule } from "./actionCard/approvalInfo";
+import { userAttachments, type UserAttachment } from "./userAttachment";
+
+export { userAttachments, type UserAttachment };
 
 /**
  * Fold the agent-chat event log into the timeline the column renders.
@@ -138,6 +141,14 @@ export function isQuestionTool(name: string): boolean {
 export interface CredentialState {
   requestId: string;
   asker: string;
+  /**
+   * `token`: one secret value. `login`: a website username and password
+   * (society/login_tool.py). `plugin` / `cli`: connect a service
+   * (society/connect_tool.py); then `env` is the plugin id or CLI name.
+   */
+  kind: CredentialKind;
+  /** The sign-in page of a `login` card. */
+  url: string;
   env: string;
   label: string;
   description: string;
@@ -147,11 +158,19 @@ export interface CredentialState {
   status: string | null;
 }
 
+export type CredentialKind = "token" | "login" | "plugin" | "cli";
+
 /** The tool an agent asks for a credential with — bare or behind an MCP prefix. */
 export const CREDENTIAL_TOOL = "society_request_credential";
+/** The tools that open the same kind of card: a website login, a connection. */
+const CARD_TOOLS = [CREDENTIAL_TOOL, "society_request_login", "society_request_connect"];
 
 export function isCredentialTool(name: string): boolean {
-  return name === CREDENTIAL_TOOL || name.endsWith(`__${CREDENTIAL_TOOL}`);
+  return CARD_TOOLS.some((tool) => name === tool || name.endsWith(`__${tool}`));
+}
+
+function credentialKind(raw: unknown): CredentialKind {
+  return raw === "login" || raw === "plugin" || raw === "cli" ? raw : "token";
 }
 
 /** The call shows a card the person answers: a question or a credential field. */
@@ -274,21 +293,6 @@ function teamEventOf(prompt: string): TeamEvent | undefined {
   return match ? TEAM_EVENTS[match[1]] : undefined;
 }
 
-/** One file's receipt in the timeline — enough to say what was sent, no more. */
-export interface UserAttachment {
-  name: string;
-  kind: string;
-  /** `vision` / `extraction` / `none` — whether the model could read it. */
-  describedBy: string;
-  /**
-   * Where the file itself can be fetched from, same-origin — set for an image
-   * that lives inside an open workspace (a drop the Agentic IDE stored; the
-   * backend folds it in, `dodaios/agentic_ide/prompt_receipts.py`). The
-   * timeline draws the picture when it has this and a chip when it does not.
-   */
-  url?: string;
-}
-
 export interface TurnItem {
   type: "turn";
   id: string;
@@ -316,6 +320,11 @@ export interface TurnItem {
    * its seat to the next message and the result arrives in a turn of its own.
    */
   background?: string[];
+  /**
+   * The background tasks a running turn waits on (`background_wait`): the
+   * agent ended its message, the CLI wakes it again once they finish.
+   */
+  waitingOn?: string[];
 }
 
 export interface ErrorItem {
@@ -385,33 +394,12 @@ export const EMPTY_TIMELINE: Timeline = {
   sessionPatch: null,
 };
 
-/** The attachment receipts off one `user_message`, tolerant of any shape. */
 /** Who wrote a message on the person's behalf (`author` on `user_message`), if anyone. */
 function messageAuthor(raw: unknown): { agentId: string; name: string } | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const row = raw as Record<string, unknown>;
   const name = typeof row.name === "string" ? row.name : "";
   return name ? { agentId: typeof row.agent_id === "string" ? row.agent_id : "", name } : undefined;
-}
-
-function userAttachments(raw: unknown): UserAttachment[] {
-  if (!Array.isArray(raw)) return [];
-  const out: UserAttachment[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") continue;
-    const row = entry as Record<string, unknown>;
-    const name = str(row.name);
-    if (name) {
-      const url = str(row.url);
-      out.push({
-        name,
-        kind: str(row.kind),
-        describedBy: str(row.described_by),
-        ...(url ? { url } : {}),
-      });
-    }
-  }
-  return out;
 }
 
 function str(v: unknown, fallback = ""): string {
@@ -1191,6 +1179,11 @@ export function reduceEvent(tl: Timeline, ev: AgentChatEvent): Timeline {
       );
     }
 
+    case "background_wait": {
+      const tasks = Array.isArray(p.tasks) ? p.tasks.map((task) => str(task)).filter(Boolean) : [];
+      return updateTurn(base, turnId, (turn) => ({ ...turn, waitingOn: tasks }));
+    }
+
     case "usage_delta": {
       const usage = p.usage;
       if (!usage || typeof usage !== "object") return base;
@@ -1299,6 +1292,8 @@ export function reduceEvent(tl: Timeline, ev: AgentChatEvent): Timeline {
       const credential: CredentialState = {
         requestId,
         asker: str(p.asker),
+        kind: credentialKind(p.kind),
+        url: str(p.url),
         env,
         label: str(p.label) || env,
         description: str(p.description),

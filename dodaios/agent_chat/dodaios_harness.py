@@ -78,7 +78,7 @@ SOCIETY_PREAMBLE: Final[str] = (
     "only. You are this turn's worker: spawn no sub-agents."
 )
 
-SYSTEM_PREAMBLE: Final[str] = (
+_SHARED_PREAMBLE: Final[str] = (
     "You are the person's assistant (your name is stated at the top of this prompt) in "
     "the chat of the Dodaios desktop app; they also talk to you by voice.\n\n"
     + CONVERSATIONAL_TURN_REMINDER
@@ -93,9 +93,20 @@ SYSTEM_PREAMBLE: Final[str] = (
     "When the person selects the browser (@browser, @browser-use, [tools: core:browser]), "
     f"use society_browser from the `{_SERVER_NAME}` MCP server, the live browser in the "
     "Options rail; if it is unavailable, say so.\n\n"
-    "Approval cards are pending work, not failures. You are this turn's worker: spawn no "
-    "sub-agents."
+    "Approval cards are pending work, not failures."
 )
+
+#: The closing block of the assistant's own chat (the Jarvis surface). There
+#: the turn itself is the worker: the background workers of old are retired.
+SYSTEM_PREAMBLE: Final[str] = _SHARED_PREAMBLE + " You are this turn's worker: spawn no sub-agents."
+
+#: The closing block of a coding thread in the Agentic IDE (a Claude Code seat
+#: with no assistant identity). The same transport facts, but the CLI keeps its
+#: own sub-agents: a coding agent splits its work into them, the person asks
+#: for them by name, and the thread lists each one under its row. The rule
+#: above, applied here, made Claude Code refuse sub-agents it was asked for
+#: (2026-11-02).
+CODING_PREAMBLE: Final[str] = _SHARED_PREAMBLE
 
 
 #: The child environment variable the control key travels in — the SAME name
@@ -456,35 +467,28 @@ def render_transcript(
     The model reading this IS the second speaker, whatever it is called (the
     assistant on the app's own chat, a named agent on its seat), so its own
     lines are labelled ``You``. Nothing parses these labels.
+
+    A turn's tool calls appear as the same labelled tool record the in-process
+    brain replays (``runner_brain.brain_history_from_events``): each call with
+    its bounded result, worded as data. A bare "[used tool X]" line without the
+    result taught smaller models to type that line instead of calling the tool
+    (issue #978).
     """
-    from dodaios.agent_chat.runner_api import messages_from_events
+    from dodaios.agent_chat.runner_brain import brain_history_from_events
 
     lines: list[str] = []
-    for message in messages_from_events(history):
+    for message in brain_history_from_events(history, max_messages=None):
+        text = message.content.strip() if isinstance(message.content, str) else ""
+        if not text:
+            continue
         if message.role == "user":
-            text = message.content if isinstance(message.content, str) else ""
-            if text.strip():
-                lines.append(f"Person: {text.strip()}")
+            lines.append(f"Person: {text}")
         elif message.role == "assistant":
-            text = _prose(message.content)
-            if text.strip():
-                lines.append(f"You: {text.strip()}")
+            lines.append(f"You: {text}")
     out = "\n\n".join(lines)
     if len(out) > max_chars:
         out = "…" + out[-max_chars:]
     return out
-
-
-def _prose(content: str | list[dict[str, Any]]) -> str:
-    if isinstance(content, str):
-        return content
-    bits: list[str] = []
-    for block in content:
-        if block.get("type") == "text":
-            bits.append(str(block.get("text") or ""))
-        elif block.get("type") == "tool_use":
-            bits.append(f"[used tool {block.get('name') or 'tool'}]")
-    return "\n".join(b for b in bits if b.strip())
 
 
 def _preamble_of(text: str) -> str:
@@ -641,6 +645,7 @@ __all__ = [
     "COMPACT_MAX_CHARS",
     "HEADER_NAME",
     "KEY_ENV_VAR",
+    "CODING_PREAMBLE",
     "SOCIETY_PREAMBLE",
     "SYSTEM_PREAMBLE",
     "TRANSCRIPT_MAX_CHARS",

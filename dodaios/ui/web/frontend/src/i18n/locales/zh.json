@@ -327,6 +327,7 @@
     "jarvisx": "Dodaios X",
     "marketplace": "市场",
     "agentic_ide": "智能体 IDE",
+    "verse": "Verse",
     "agentic_ide_beta": "Beta",
     "voice": "{name} 语音",
     "voice_shortcuts": "快捷键",
@@ -1549,6 +1550,7 @@
     "err_pending_publisher": "此连接正等待发布方完成设置。浏览器登录可用后请重试。",
     "connection_unavailable": "连接不可用",
     "unsupported_device": "此设备不支持",
+    "cli_precedence": "{cli} 已连接并会优先使用；如需使用 {plugin} 插件，请在请求中点名该插件。",
     "installed_count": "已安装 {count} 个",
     "attention_one": "{plugin} 需要重新连接",
     "attention_many": "{count} 个连接需要重新连接",
@@ -7520,6 +7522,7 @@
       "status_needs_you": "需要你",
       "status_waiting": "正在等你",
       "preview_needs_you": "需要你",
+      "sign_in_site": "网站",
       "preview_draft": "草稿：",
       "preview_working": "工作中…",
       "time_now": "刚刚",
@@ -7594,6 +7597,36 @@
     "storage_failed": "无法安全保存令牌。请重试。",
     "request_busy": "正在检查此令牌。请稍等后重试。",
     "failed": "无法保存凭据。"
+  },
+  "login_card": {
+    "title": "登录 {site}",
+    "subtitle": "打开安全表单",
+    "open": "打开",
+    "username": "用户名或邮箱",
+    "password": "密码",
+    "footer": "已安全保存。{agent} 永远看不到它；浏览器只会在 {host} 上输入。",
+    "save": "保存",
+    "decline": "暂不",
+    "close": "关闭",
+    "saved": "{site} 登录信息已保存",
+    "declined": "未提供 {site} 登录信息",
+    "invalid": "请输入用户名或邮箱以及密码。",
+    "storage_failed": "无法安全保存登录信息，请重试。",
+    "failed": "无法保存登录信息。"
+  },
+  "connect_card": {
+    "title": "连接 {label}",
+    "subtitle": "{agent} 需要它才能继续",
+    "connect": "连接",
+    "connecting": "正在连接…",
+    "not_now": "暂不",
+    "waiting": "完成登录后，卡片会自动更新",
+    "code": "在登录页面输入代码 {code}",
+    "open_again": "再次打开登录页面",
+    "timeout": "尚未连接。点击连接重试。",
+    "failed": "无法连接 {label}，请重试。",
+    "connected": "{label} 已连接",
+    "declined": "{label} 未连接"
   },
   "question_card": {
     "aria": "智能体的提问",
@@ -7706,6 +7739,8 @@
     "steps_so_far": "{summary}，目前 {count} 步",
     "subagents_working_one": "{count} 个子代理正在工作",
     "subagents_working_other": "{count} 个子代理正在工作",
+    "waiting_background_one": "正在等待 {count} 个后台任务",
+    "waiting_background_other": "正在等待 {count} 个后台任务",
     "files_changed_one": "已更改 {count} 个文件",
     "files_changed_other": "已更改 {count} 个文件",
     "changed_files": "已更改的文件",
@@ -10195,6 +10230,15 @@
     "signin_not_yet": "——安装后尚不会连接任何内容。"
   },
   "ide_threads": {
+    "header": {
+      "label": "线程：{thread}",
+      "review_changes": "查看更改",
+      "show_in_git": "在 Git 中显示更改",
+      "more": "{thread} 的更多操作",
+      "maximize": "隐藏侧边栏",
+      "restore": "显示侧边栏",
+      "close": "关闭线程（移入归档）"
+    },
     "layout_aria": "IDE 布局",
     "layout_grid": "终端网格",
     "layout_threads": "线程",
@@ -10248,6 +10292,9 @@
     "count_failed": "{count} 个失败",
     "subagents_aria": "子智能体",
     "main_thread": "主线程",
+    "show_subagents": "显示“{title}”的 {count} 个子智能体",
+    "hide_subagents": "隐藏“{title}”的子智能体",
+    "subagents_of": "{title} 的子智能体",
     "in_background": "在后台",
     "task": "任务",
     "task_from": "来自 {parent} 的任务",
@@ -10319,7 +10366,11 @@
     "send_message": "发送消息",
     "queue_title": "排队，待智能体完成后发送",
     "copy_message": "复制消息",
-    "scroll_newest": "滚动到最新消息"
+    "scroll_newest": "滚动到最新消息",
+    "open_side_by_side": "并排打开",
+    "drop_side_by_side": "松开以并排打开",
+    "drop_replace": "松开以替换此线程",
+    "close_column": "关闭 {target}"
   },
   "ide_view": {
     "split_right": "右侧",

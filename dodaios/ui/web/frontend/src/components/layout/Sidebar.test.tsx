@@ -8,6 +8,7 @@ import {
   SIDEBAR_RAIL_AT_WIDTH,
   SIDEBAR_RAIL_WIDTH,
 } from "@/components/layout/Sidebar";
+import { useVerseModeStore } from "@/store/verseMode";
 import { NAV_GROUPS, NAV_FOOTER_ITEMS, SETTINGS_HUB_IDS } from "@/components/layout/navGroups";
 import { isSectionId, useEventStore } from "@/store/events";
 import { useQuickSwitcher } from "@/store/quickSwitcher";
@@ -669,12 +670,14 @@ describe("compact sidebar navigation", () => {
 
   test("keeps core destinations above visible recent chats", () => {
     renderSidebar();
-    for (const id of ["agents", "dictation", "visualization", "agentic-ide", "plugins", "marketplace"]) {
+    for (const id of ["agents", "verse", "dictation", "visualization", "agentic-ide", "plugins", "marketplace"]) {
       expect(screen.getByTestId(`nav-row-${id}`)).toBeTruthy();
     }
     expect(screen.getByTestId("recent-chats")).toBeTruthy();
     expect(screen.queryByTestId("nav-row-wallpaper")).toBeNull();
     expect(screen.queryByTestId("nav-row-memory")).toBeNull();
+    // Built for you lives behind "More" now.
+    expect(screen.queryByTestId("nav-row-self-build")).toBeNull();
   });
 
   test("opens Jarvis Voice directly with artifacts in the main list", () => {
@@ -686,7 +689,6 @@ describe("compact sidebar navigation", () => {
     fireEvent.click(screen.getByTestId("nav-row-dictation"));
     expect(useHomeStore.getState().surface).toBe("chat");
     expect(useEventStore.getState().activeSection).toBe("dictation");
-    expect(screen.getAllByTestId("nav-row-dictation")).toHaveLength(1);
     fireEvent.click(screen.getByTestId("nav-row-visualization"));
     expect(useEventStore.getState().activeSection).toBe("visualization");
   });
@@ -714,9 +716,22 @@ describe("compact sidebar navigation", () => {
     expect(screen.queryByTestId("sidebar-more-panel")).toBeNull();
   });
 
-  test("shows the agents, the IDE, built for you and the voice in that order", () => {
+  test("the Verse row opens Agents and asks for the full-window Verse", () => {
+    useVerseModeStore.setState({ requested: false, open: false });
     renderSidebar();
-    const order = ["agents", "agentic-ide", "self-build", "dictation", "plugins"].map(
+    fireEvent.click(screen.getByTestId("nav-row-verse"));
+    expect(useEventStore.getState().activeSection).toBe("agents");
+    expect(useVerseModeStore.getState().requested).toBe(true);
+    // Lit while the Verse is on screen, and the Agents row steps back.
+    act(() => useVerseModeStore.setState({ requested: false, open: true }));
+    expect(screen.getByTestId("nav-row-verse").className).toContain("jarvis-nav-active");
+    expect(screen.getByTestId("nav-row-agents").className).not.toContain("jarvis-nav-active");
+    act(() => useVerseModeStore.setState({ open: false }));
+  });
+
+  test("shows the agents, the IDE, the Verse, the voice, the extensions and the artifacts in that order", () => {
+    renderSidebar();
+    const order = ["agents", "agentic-ide", "verse", "dictation", "plugins", "visualization"].map(
       (id) => screen.getByTestId(`nav-row-${id}`),
     );
     for (let i = 1; i < order.length; i++) {

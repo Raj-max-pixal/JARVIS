@@ -319,8 +319,14 @@ def models_root(data_dir: str | None = None) -> Path:
     Honours the same ``JARVIS__MEMORY__DATA_DIR`` seam as the wake-model
     fetcher, so a headless install that relocated its data dir (ADR-0027) keeps
     every model in one place instead of scattering them across two conventions.
+    Without either, the runtime data dir (``JARVIS_DATA_DIR`` or
+    ``<checkout>/data``), never the cwd (#458).
     """
-    base = data_dir or os.environ.get("JARVIS__MEMORY__DATA_DIR") or "data"
+    base = data_dir or os.environ.get("JARVIS__MEMORY__DATA_DIR")
+    if not base:
+        from dodaios.core.paths import runtime_data_dir
+
+        base = str(runtime_data_dir())
     return Path(base) / "models"
 
 
@@ -616,6 +622,14 @@ SHERPA_BUNDLES: dict[str, SherpaBundle] = {
         label="Tugão (European Portuguese)",
         language="pt",
         gender="masculine",
+    ),
+    # French is opt-in until a sherpa-onnx 2.x-compatible phonemizer is wired.
+    # Upstream archive: k2-fsa/sherpa-onnx tts-models release.
+    "vits-piper-fr_FR-siwis-medium": _piper_bundle(
+        "vits-piper-fr_FR-siwis-medium",
+        label="Siwis (French)",
+        language="fr",
+        gender="feminine",
     ),
     "vits-piper-de_DE-ramona-low": _piper_bundle(
         "vits-piper-de_DE-ramona-low",

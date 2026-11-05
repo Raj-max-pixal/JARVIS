@@ -59,7 +59,12 @@ from .schema import (
     WSWelcome,
     event_to_ws_envelope,
 )
-from .spa_build import build_is_complete, holding_page_html, recover_conflicted_index
+from .spa_build import (
+    build_is_complete,
+    holding_page_html,
+    missing_build_watch,
+    recover_conflicted_index,
+)
 from .surface_security import SurfaceSecurity, set_browser_login_required
 
 if TYPE_CHECKING:
@@ -555,6 +560,7 @@ class WebServer:
         from .marketplace_routes import router as marketplace_router
         from .mcp_routes import router as mcp_router
         from .memory_vault_routes import router as memory_vault_router
+        from .personal_memory_routes import router as personal_memory_router
         from .mission_billing_routes import router as mission_billing_router
         from .missions_auth import router as missions_auth_router
         from .missions_pty_routes import router as missions_pty_router
@@ -843,6 +849,11 @@ class WebServer:
         )
         app.state.progression = self._progression
         app.include_router(progression_router)
+        # The Unreal Verse host (dodaios/verse_host): status, launch and the
+        # verse.bridge/1 socket. Nothing starts until the first show.
+        from .verse_routes import router as verse_router
+
+        app.include_router(verse_router)
         # Default: no recorder wired up — _init_session_stack() in start()
         # sets this once it succeeds.
         app.state.session_store = None
@@ -866,6 +877,8 @@ class WebServer:
         app.include_router(wiki_router)
         # Path-addressed Memory section API (index, reader, map, edits).
         app.include_router(memory_vault_router)
+        # Personal memory vault API (ADR-0044): items, history, export, import.
+        app.include_router(personal_memory_router)
         # Phase B3 — Desktop wiki view live-reload WS endpoint.
         # Forwards WikiPageChanged events from the shared EventBus to
         # subscribed UI clients. WikiWatcher is started in start().
@@ -2409,6 +2422,10 @@ class WebServer:
         if self.cfg.ui.dev_mode:
             return
 
+        # An install without dist/ would otherwise sit on "Updating…" forever
+        # with nothing in the log (issue #1057).
+        missing_build_watch.note_startup(INDEX_FILE)
+
         if ASSETS_DIR.is_dir():
             app.mount(
                 "/assets",
@@ -2464,6 +2481,7 @@ class WebServer:
         # holding page below says what is happening and comes back on its own.
         # See dodaios/ui/web/spa_build.py.
         if INDEX_FILE.is_file() and build_is_complete(INDEX_FILE, DIST_DIR):
+            missing_build_watch.clear()
             return FileResponse(
                 str(INDEX_FILE),
                 headers={
@@ -2473,6 +2491,7 @@ class WebServer:
             )
         recovered = recover_conflicted_index(INDEX_FILE, DIST_DIR)
         if recovered is not None:
+            missing_build_watch.clear()
             return HTMLResponse(
                 content=recovered,
                 headers={
@@ -2480,10 +2499,12 @@ class WebServer:
                     "Pragma": "no-cache",
                 },
             )
-        return self._spa_placeholder_response()
+        return self._spa_placeholder_response(
+            build_missing=missing_build_watch.observe(INDEX_FILE)
+        )
 
     @staticmethod
-    def _spa_placeholder_response() -> HTMLResponse:
+    def _spa_placeholder_response(*, build_missing: bool = False) -> HTMLResponse:
         """The boot splash, while dist/ is between two builds.
 
         It is deliberately the SAME splash the window opens with — same ground,
@@ -2500,7 +2521,7 @@ class WebServer:
         cure.
         """
         return HTMLResponse(
-            content=holding_page_html(),
+            content=holding_page_html(build_missing=build_missing),
             status_code=200,
             headers={
                 "Cache-Control": "no-store, max-age=0",
@@ -2850,6 +2871,12 @@ class WebServer:
 
         _attach_permission_bus(self.bus, asyncio.get_running_loop())
 
+        # Which data directory holds the agents, chats and settings this run
+        # shows: a switched JARVIS_DATA_DIR otherwise looks like lost data.
+        from dodaios.core.config import log_data_dir_once
+
+        log_data_dir_once()
+
         await self.prepare_app()
         import uvicorn
 
@@ -2922,6 +2949,15 @@ class WebServer:
             self._serve_task = None
 
         _boot_mark("uvicorn_serve")
+
+        # The Unreal Verse host launches nothing at start; with the dev_bridge
+        # flag on it renews the editor's discovery file (contract 1).
+        try:
+            from .verse_routes import start_verse_host
+
+            await start_verse_host(self.app, resolved_port)
+        except Exception:  # noqa: BLE001 -- the Verse never blocks the app start
+            logger.opt(exception=True).warning("Verse host start step failed")
 
         # Voice-ready UI backstop (permanent "starting up" bug): the frontend's
         # startup banner + top-left "STARTING…" status clear ONLY on a
@@ -3232,15 +3268,16 @@ class WebServer:
             )
             return
 
-        # Relative path on purpose — it must match what the writers actually
-        # use, NOT cfg.memory.data_dir. The production writer is the Vision
-        # ScreenshotSource (dodaios/vision/engine.py constructs it with no
-        # blob_dir → falls back to the relative _DEFAULT_BLOB_DIR in
-        # dodaios/vision/screenshot.py = data/flight_recorder/blobs). It ignores
-        # cfg.memory.data_dir, so deriving from that key would make the sweep a
-        # silent no-op whenever data_dir is overridden. Same process → same cwd
-        # → same directory as the writer.
-        flight_recorder_dir = Path("data") / "flight_recorder"
+        # The same directory the writers use, NOT cfg.memory.data_dir. The
+        # production writer is the Vision ScreenshotSource
+        # (dodaios/vision/engine.py constructs it with no blob_dir → falls back
+        # to _DEFAULT_BLOB_DIR in dodaios/vision/screenshot.py =
+        # flight_recorder_dir()/blobs). It ignores cfg.memory.data_dir, so
+        # deriving from that key would make the sweep a silent no-op whenever
+        # data_dir is overridden.
+        from dodaios.core.paths import flight_recorder_dir as _flight_recorder_dir
+
+        flight_recorder_dir = _flight_recorder_dir()
 
         # The one-shot boot sweep is pure cleanup of old blobs — nothing
         # downstream consumes its stats (they are only logged). Awaiting it sat
@@ -3285,12 +3322,13 @@ class WebServer:
         auto-flushes every second, and oversized event blobs land under
         ``blobs/`` which the screenshot-retention task already prunes.
         """
+        from dodaios.core.paths import flight_recorder_dir
         from dodaios.telemetry.recorder import attach_flight_recorder
 
         rec = attach_flight_recorder(
             self.bus,
             enabled=self.cfg.telemetry.flight_recorder,
-            data_dir=Path("data") / "flight_recorder",
+            data_dir=flight_recorder_dir(),
         )
         if rec is None:
             logger.info("Flight recorder disabled (telemetry.flight_recorder=false)")
@@ -4212,6 +4250,15 @@ class WebServer:
         except Exception:
             logger.opt(exception=True).warning("Appshot helpers failed to stop")
 
+        # Ask a running Verse to save and quit (lifecycle.quit app_quit) and
+        # delete the dev discovery file that holds a token.
+        try:
+            from .verse_routes import stop_verse_host
+
+            await stop_verse_host(self.app)
+        except Exception:  # noqa: BLE001 -- independent resources must still shut down
+            logger.opt(exception=True).warning("Verse host stop failed")
+
         if runtime_refs.get_web_app() is self.app:
             runtime_refs.set_web_app(None)
         # A cancelled setup waiter cannot stop its worker thread. Join it
@@ -4585,6 +4632,17 @@ class WebServer:
                     self._serve_task.cancel()
         self._server = None
         self._serve_task = None
+
+        # A recall store nobody closed keeps a non-daemon aiosqlite thread, and
+        # the process could not exit until systemd killed it (BC-250 2026-10-29).
+        try:
+            from dodaios.memory.recall import close_open_recall_stores
+
+            closed = await close_open_recall_stores()
+            if closed:
+                logger.info("Closed {} recall store(s) left open", closed)
+        except Exception as exc:  # noqa: BLE001 - shutdown continues best-effort
+            logger.opt(exception=exc).warning("Recall store cleanup failed")
 
         # Browser/desktop realtime owners must release their ephemeral threads
         # before their shared process is reaped. Keep this unconditional: a

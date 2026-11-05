@@ -100,7 +100,14 @@ from dodaios.core.response_style import KEEP_GOING_ON_TOOL_FAILURE
 log = logging.getLogger(__name__)
 
 _READLINE_LIMIT: Final[int] = 16 * 1024 * 1024
-_TURN_TIMEOUT_S: Final[float] = 3600.0
+#: A coding-agent turn has no wall-clock limit: a session may run for days.
+#: Stop ends it; a stalled ACP runtime ends through its own watchdog.
+_TURN_TIMEOUT_S: Final[float | None] = None
+#: A CLI that sent its terminal result and then printed nothing for this long
+#: is stuck, not busy (background sub-agents keep printing while they work).
+_EXIT_AFTER_RESULT_S: Final[float] = 600.0
+#: agy's print mode stops itself after 5 min unless told otherwise.
+_AGY_PRINT_TIMEOUT: Final[str] = f"{365 * 24 * 3600}s"
 
 
 class CliUnavailable(RuntimeError):
@@ -874,8 +881,11 @@ def _plan_claude_code(
         argv += ["--mcp-config", mcp_config]
         if identity is not None and identity.path is not None:
             argv += ["--append-system-prompt-file", str(identity.path)]
-        else:
+        elif identity is not None:
             argv += ["--append-system-prompt", dodaios_harness.SYSTEM_PREAMBLE]
+        else:
+            # No assistant identity: a coding thread, which keeps its sub-agents.
+            argv += ["--append-system-prompt", dodaios_harness.CODING_PREAMBLE]
     if resume:
         argv += ["--resume", resume]
         sid = resume
@@ -1108,9 +1118,9 @@ def plan_agy(
         "stream-json",
         "--add-dir",
         str(work),
-        # agy's own print timeout is 5 min; ours is the long one.
+        # agy's own print timeout is 5 min; a turn here has no limit.
         "--print-timeout",
-        f"{int(_TURN_TIMEOUT_S // 60)}m",
+        _AGY_PRINT_TIMEOUT,
     ]
     if mode == "plan":
         argv += ["--mode", "plan"]
@@ -1745,6 +1755,13 @@ class _ClaudeState:
     agents: dict[str, _ClaudeState] = field(default_factory=dict)
     #: The CLI's task id -> the spawning call, for task updates that name only the task.
     agent_tasks: dict[str, str] = field(default_factory=dict)
+    #: Tasks the CLI still runs (task id -> what it does): background shells
+    #: and agents. They keep the CLI alive after the agent's message ended.
+    open_tasks: dict[str, str] = field(default_factory=dict)
+    #: The main agent ended its message; only open tasks can wake it again.
+    idle: bool = False
+    #: The task list the last ``background_wait`` event named.
+    wait_sent: tuple[str, ...] = ()
 
 
 #: Streamed characters per estimated output token (English and code average).
@@ -1912,6 +1929,40 @@ def _claude_subagent_line(
     return out
 
 
+def _claude_track_task(obj: dict[str, Any], st: _ClaudeState) -> None:
+    """Keep the set of tasks the CLI still runs, shells and agents alike."""
+    subtype = str(obj.get("subtype") or "")
+    task_id = str(obj.get("task_id") or "")
+    if not task_id or subtype not in _CLAUDE_TASK_SUBTYPES:
+        return
+    if subtype == "task_started":
+        what = str(obj.get("description") or "").strip().splitlines()
+        st.open_tasks[task_id] = what[0][:120] if what else str(obj.get("task_type") or "task")
+        return
+    if subtype == "task_updated":
+        patch = obj.get("patch") if isinstance(obj.get("patch"), dict) else {}
+        if str(patch.get("status") or "") in {"", "running", "pending"}:
+            return
+    if subtype in {"task_updated", "task_notification"}:
+        st.open_tasks.pop(task_id, None)
+
+
+def _claude_wait_events(st: _ClaudeState) -> list[dict[str, Any]]:
+    """``background_wait`` whenever what the idle agent waits for changes.
+
+    Claude Code can end its message while background shells or agents still
+    run: the CLI stays alive and wakes the agent again when they finish. The
+    answer then reads finished while the turn is not, so the timeline says
+    what it waits for. An empty list: it no longer waits (it works again,
+    or nothing is left open).
+    """
+    tasks = tuple(st.open_tasks.values()) if st.idle else ()
+    if tasks == st.wait_sent:
+        return []
+    st.wait_sent = tasks
+    return [make_event("background_wait", {"turn_id": st.turn_id, "tasks": list(tasks)})]
+
+
 def _claude_task_events(obj: dict[str, Any], st: _ClaudeState) -> list[dict[str, Any]]:
     """A sub-agent's life from Claude Code's task lines: started, working, finished.
 
@@ -2000,8 +2051,10 @@ def translate_claude_line(obj: dict[str, Any], st: _ClaudeState) -> list[dict[st
 
     if kind == "system":
         # init / hooks / status are nothing the timeline shows; a sub-agent's
-        # life (started, working, finished) is.
-        return _claude_task_events(obj, st)
+        # life (started, working, finished) is, and so is a wait on open tasks.
+        out = _claude_task_events(obj, st)
+        _claude_track_task(obj, st)
+        return out + _claude_wait_events(st)
 
     if kind == "stream_event":
         ev = obj.get("event") or {}
@@ -2009,6 +2062,9 @@ def translate_claude_line(obj: dict[str, Any], st: _ClaudeState) -> list[dict[st
         if et == "message_start":
             mid = ((ev.get("message") or {}).get("id")) or uuid.uuid4().hex
             st.current_message_id = str(mid)
+            # The agent works again (a finished task woke it): no longer waiting.
+            st.idle = False
+            out.extend(_claude_wait_events(st))
         elif et == "content_block_start":
             block = ev.get("content_block") or {}
             if block.get("type") == "thinking":
@@ -2065,6 +2121,9 @@ def translate_claude_line(obj: dict[str, Any], st: _ClaudeState) -> list[dict[st
                 if event is not None:
                     out.append(event)
         elif et == "message_delta":
+            if (ev.get("delta") or {}).get("stop_reason") == "end_turn":
+                st.idle = True
+                out.extend(_claude_wait_events(st))
             # The end of a message: its usage carries the true output count.
             usage_end = ev.get("usage")
             mid = st.current_message_id
@@ -2199,6 +2258,8 @@ def translate_claude_line(obj: dict[str, Any], st: _ClaudeState) -> list[dict[st
 
     if kind == "result":
         st.saw_result = True
+        st.idle = True
+        out.extend(_claude_wait_events(st))
         st.result_text = str(obj.get("result") or "")
         if obj.get("is_error"):
             st.status = "error"
@@ -3667,7 +3728,7 @@ async def resume_hosted_cli_turn(handle: TurnHandle, proc: Any) -> str | None:
         placement=None,
         tree=None,
         bridge=None,
-        timeout_s=max(60.0, _TURN_TIMEOUT_S - elapsed),
+        timeout_s=_TURN_TIMEOUT_S,
     )
     await handle.emit(
         make_event(
@@ -4057,7 +4118,7 @@ async def _drive_cli(
     placement: Any,
     tree: Any,
     bridge: Any | None,
-    timeout_s: float = _TURN_TIMEOUT_S,
+    timeout_s: float | None = _TURN_TIMEOUT_S,
 ) -> _Outcome:
     """Read a started CLI to its end: translate, answer, and judge the outcome.
 
@@ -4537,11 +4598,27 @@ async def _drive_cli(
     watcher = asyncio.create_task(_watch_cancel())
     provider_watcher = asyncio.create_task(_watch_provider_failure())
     stall_watcher = asyncio.create_task(_watch_stall())
+    exit_watcher: asyncio.Task[None] | None = None
+    lingered = [False]
     try:
         # EOF is not process exit: a CLI may close both pipes and keep
-        # running. The deadline must also cover waiting for the process.
+        # running. The deadlines must also cover waiting for the process.
         deadline = None if getattr(handle, "goal_turn", False) else timeout_s
-        async with asyncio.timeout(deadline):
+        async with asyncio.timeout(deadline) as scope:
+
+            async def _watch_exit_after_result() -> None:
+                # No limit on the work itself, but a CLI that gave its final
+                # answer and then stays alive in silence is stuck, not busy.
+                while True:
+                    await asyncio.sleep(_ACP_WATCH_TICK_S)
+                    if not getattr(state, "saw_result", False):
+                        continue
+                    if time.monotonic() - activity[0] > _EXIT_AFTER_RESULT_S:
+                        break
+                lingered[0] = True
+                scope.reschedule(asyncio.get_running_loop().time())
+
+            exit_watcher = asyncio.create_task(_watch_exit_after_result())
             await asyncio.gather(pump, drain, feeder)
             await proc.wait()
     except TimeoutError:
@@ -4556,7 +4633,13 @@ async def _drive_cli(
         await _acp_cancel()
         _kill(proc)
         status = "error"
-        error_text = f"{runner} did not finish within {int(_TURN_TIMEOUT_S)} s."
+        if lingered[0]:
+            error_text = (
+                f"{runner} did not finish within {int(_EXIT_AFTER_RESULT_S)} s"
+                " of its final answer."
+            )
+        else:
+            error_text = f"{runner} did not finish within {int(timeout_s or 0)} s."
     except asyncio.CancelledError:
         if hosted and not handle.cancel.is_set():
             # The app is going away, nobody pressed Stop: the CLI keeps working
@@ -4572,6 +4655,8 @@ async def _drive_cli(
         watcher.cancel()
         provider_watcher.cancel()
         stall_watcher.cancel()
+        if exit_watcher is not None:
+            exit_watcher.cancel()
         for task in (pump, drain, feeder):
             if not task.done():
                 task.cancel()

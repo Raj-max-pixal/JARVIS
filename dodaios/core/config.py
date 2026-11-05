@@ -45,7 +45,7 @@ from dodaios.ui.pets.states import DEFAULT_PET_ID
 from .branding import KEYRING_SERVICE_NAME, LEGACY_KEYRING_SERVICE_NAMES
 from .env_prefix import accepted_names
 from .identity_boot import resolve_config_file
-from .instance import current_instance, resolve_data_dir
+from .instance import current_instance, data_dir_source, resolve_data_dir
 from .protocols import RiskTier
 
 # AckBrainConfig lives under dodaios.brain.ack_brain.config. We cannot
@@ -84,6 +84,43 @@ def _resolve_data_dir() -> Path:
 
 
 DATA_DIR = _resolve_data_dir()
+# Read in the same import as DATA_DIR, so the two always describe one decision.
+DATA_DIR_SOURCE = data_dir_source()
+_data_dir_logged = False
+
+
+def memory_data_dir(cfg: Any) -> Path:
+    """``cfg.memory.data_dir``, or :data:`DATA_DIR` when ``cfg`` carries none.
+
+    For callers that may run without a config (a runtime built without one,
+    a stub in a test): the fallback is the runtime data dir, never a
+    cwd-relative ``data/`` (#458).
+    """
+    raw = getattr(getattr(cfg, "memory", None), "data_dir", None)
+    return Path(raw) if raw else DATA_DIR
+
+
+def data_dir_info() -> dict[str, str]:
+    """The active data directory and where it came from, for diagnostics."""
+    return {"path": str(DATA_DIR), "source": DATA_DIR_SOURCE}
+
+
+def log_data_dir_once(log: Any = None) -> bool:
+    """Log ``Data directory: <path> (source: ...)`` once per process.
+
+    Agents, chats and settings live under this directory, so a launcher that
+    points ``JARVIS_DATA_DIR`` somewhere new looks like lost data unless the
+    log says which directory is in use (issue #1058).
+    """
+    global _data_dir_logged
+    if _data_dir_logged:
+        return False
+    _data_dir_logged = True
+    (log or logging.getLogger(__name__)).info(
+        "Data directory: %s (source: %s)", DATA_DIR, DATA_DIR_SOURCE
+    )
+    return True
+
 ASSETS_DIR = PROJECT_ROOT / "assets"
 
 # Guards _resolve_writable_data_dir()'s lazy writability probe below. Named
@@ -1952,6 +1989,21 @@ class JarvisLearningConfig(BaseModel):
     timeout_s: float = Field(default=90.0, ge=5.0, le=600.0)
 
 
+class MemoryVaultConfig(BaseModel):
+    """``[memory.vault]`` — the personal memory vault (ADR-0044).
+
+    One SQLite file holds the main assistant's long-term memory; every key
+    is read by ``dodaios.memory.vault.runtime`` (AP-31).
+    """
+
+    #: Off keeps the vault closed; the learned notebooks stay in charge.
+    enabled: bool = True
+    #: Vault file; empty = ``<data dir>/memory/vault.db``.
+    path: str = ""
+    #: Budget of the always-on memory block in every prompt (voice gets half).
+    profile_max_chars: int = Field(default=2_400, ge=400, le=20_000)
+
+
 class MemoryConfig(BaseModel):
     recall_store: str = "sqlite"
     # chromadb was removed (2026-06-28); there is no chroma backend in
@@ -1963,6 +2015,7 @@ class MemoryConfig(BaseModel):
     wiki: WikiMemoryConfig = Field(default_factory=WikiMemoryConfig)
     legacy_curator: LegacyCuratorConfig = Field(default_factory=LegacyCuratorConfig)
     learning: JarvisLearningConfig = Field(default_factory=JarvisLearningConfig)
+    vault: MemoryVaultConfig = Field(default_factory=MemoryVaultConfig)
 
 
 class SafetyWhitelistConfig(BaseModel):

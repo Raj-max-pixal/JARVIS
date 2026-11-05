@@ -132,8 +132,9 @@ import {
 import { installPasteBridge } from "./terminalPaste";
 import { installCopyBridge } from "./terminalCopy";
 import { createKeyEventChain } from "./terminalKeyChain";
-import { registerLiveTerminal } from "@/lib/liveTerminals";
+import { registerLiveTerminal, registerTerminalPresenter } from "@/lib/liveTerminals";
 import { PANE_INPUT_EVENT, type PaneInputDetail } from "./ideHotkeys";
+import { useIdeChatStore } from "@/store/ideChat";
 import { installNewlineBridge } from "./terminalNewline";
 import { cancelPaneReflow, queuePaneReflow } from "./paneReflowQueue";
 import {
@@ -144,6 +145,7 @@ import {
 } from "./offscreenBuffer";
 import { installQuerySuppression } from "./terminalQueries";
 import { installSynchronizedOutput } from "./terminalSynchronizedOutput";
+import { keepPresentedRendererAwake, wakePresentedRenderer } from "./presentedRenderer";
 import { FULL_SCREEN_ERASE_SCAN_TAIL, hasFullScreenErase } from "./terminalRepaint";
 import {
   bindTerminalScrollRegion,
@@ -915,6 +917,13 @@ export function AgenticTerminal({
   /** The pane's recorded conversation, opened from the header book button. */
   const [historyOpen, setHistoryOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
+  const paneRequest = useIdeChatStore((state) => state.paneRequest);
+  useEffect(() => {
+    if (!workspaceId || paneRequest?.open !== "changes") return;
+    if (paneRequest.workspaceId !== workspaceId || paneRequest.pane !== name) return;
+    setChangesOpen(true);
+    useIdeChatStore.getState().settlePaneOpen(paneRequest.nonce);
+  }, [paneRequest, workspaceId, name]);
   // Latest callbacks/appearance without re-running the connect effect.
   const onStatusRef = useRef(onStatus);
   const onAttachErrorRef = useRef(onAttachError);
@@ -1198,11 +1207,16 @@ export function AgenticTerminal({
       attachCustomKeyEventHandler: keys.add,
       input: (data) => term.input(data),
     });
+    /**
+     * Set while the Verse window is showing this xterm. Fit then measures that
+     * window, and the hidden IDE tile must not park the pane or resize it to 0.
+     */
+    let presentedHost: HTMLElement | null = null;
     /** Is this pane's tile something that can honestly be measured right now? */
-    const measurable = () =>
-      !windowCollapsed() &&
-      container.clientWidth >= 8 &&
-      container.clientHeight >= 8;
+    const measurable = () => {
+      const box = presentedHost ?? container;
+      return !windowCollapsed() && box.clientWidth >= 8 && box.clientHeight >= 8;
+    };
     /** Did the grid below come from the tile, or is it still the constructed default? */
     let mountMeasured = false;
 
@@ -1381,9 +1395,18 @@ export function AgenticTerminal({
     };
 
     const showPane = (afterFlush?: () => void) => {
-      if (!activeRef.current) return;
+      // The Verse window is a reader even while the IDE tile is off the stage.
+      if (!activeRef.current && !presentedHost) return;
+      // Output held for a size the hidden tile never had would sit until the
+      // offscreen deadline — about a second — while the user is already
+      // typing into the window. The window is measurable; the report is not
+      // what they are waiting on.
+      if (presentedHost && awaitingSizeReport && measurable()) {
+        awaitingSizeReport = false;
+      }
       if (paneVisible) {
-        afterFlush?.();
+        if (awaitingSizeReport) afterFlush?.();
+        else flushHeld(afterFlush);
         return;
       }
       paneVisible = true;
@@ -1394,6 +1417,7 @@ export function AgenticTerminal({
     };
 
     const parkPane = () => {
+      if (presentedHost) return;
       paneVisible = false;
       // The next chunk of output measures immediately rather than waiting out
       // an interval that started before this pane was even parked.
@@ -1411,6 +1435,12 @@ export function AgenticTerminal({
      * state: the document becoming visible again, and the pane being resized.
      */
     const revealIfOnScreen = () => {
+      // The IDE tile is off the stage on purpose while the window has the
+      // xterm. That must not count as "nobody is looking".
+      if (presentedHost) {
+        showPane();
+        return;
+      }
       if (!activeRef.current) return;
       if (paneVisible) return;
       const box = container.getBoundingClientRect();
@@ -1551,8 +1581,21 @@ export function AgenticTerminal({
       // offscreen still counts as painted. It has a screen; nobody is looking
       // at it. Cheap to call per chunk: React bails out on an unchanged value.
       setPainted(true);
-      if (!paneVisible) recheckParked();
-      if (paneVisible && !awaitingSizeReport) {
+      // The Verse window is the reader. Parking its bytes until
+      // OFFSCREEN_MAX_HOLD_MS is the pause between a keystroke and the glyph:
+      // the hidden IDE tile is not the surface being watched, and a paused
+      // xterm renderer would keep the previous frame even after the write.
+      if (presentedHost && awaitingSizeReport && measurable()) {
+        awaitingSizeReport = false;
+      }
+      // Recheck BEFORE the decision. A parked pane that is actually on screen
+      // un-parks itself here, and this same chunk is what the user is waiting
+      // to see — reading the flag from before the recheck parked it again.
+      if (!paneVisible && !presentedHost) recheckParked();
+      if ((paneVisible || presentedHost !== null) && !awaitingSizeReport) {
+        if (presentedHost) wakePresentedRenderer(term);
+        // Older parked bytes belong under this chunk, never after it.
+        if (offscreen.pending > 0) flushHeld();
         writeToTerminal(text, afterWrite);
         return;
       }
@@ -1781,7 +1824,9 @@ export function AgenticTerminal({
       // panel narrowed: fitting there squeezed every agent behind it to a strip
       // (37 columns, measured) and its output stayed wrapped at that width in
       // the scrollback. Coming back on stage refits (the `active` effect).
-      if (!activeRef.current) return;
+      // The Verse window is the exception: the user is reading that host, so
+      // the fit measures it (`presentedHost`) rather than the hidden tile.
+      if (!activeRef.current && !presentedHost) return;
       // The pane draws at the READER'S text size, never one it picked itself.
       // An auto-shrink that walked this size down until the floor grid fit the
       // tile shipped and was rejected within hours (2026-08-11): it silently
@@ -1971,6 +2016,69 @@ export function AgenticTerminal({
      */
     const claimResize = () => sendResize(viewerMayOwn());
     claimResizeRef.current = claimResize;
+    // The Verse takeover borrows this xterm: the element itself moves into the
+    // window, so clicks and keystrokes hit it with no forwarding. FitAddon
+    // measures term.element's parent, which is that window while it is borrowed.
+    let presentedWatch: ResizeObserver | null = null;
+    let presentedTimer: number | undefined;
+    let releasePresentedExtras = () => {};
+    let releasePresentedRenderer = () => {};
+    const releasePresented = () => {
+      if (!presentedHost) return;
+      if (presentedTimer !== undefined) window.clearTimeout(presentedTimer);
+      presentedTimer = undefined;
+      presentedWatch?.disconnect();
+      presentedWatch = null;
+      presentedHost = null;
+      releasePresentedRenderer();
+      releasePresentedRenderer = () => {};
+      releasePresentedExtras();
+      releasePresentedExtras = () => {};
+      const element = term.element;
+      if (element && element.parentElement !== container && container.isConnected) container.appendChild(element);
+      const box = container.getBoundingClientRect();
+      const viewport = { width: window.innerWidth || 0, height: window.innerHeight || 0 };
+      if (!boxOnScreen(box, viewport)) parkPane();
+    };
+    const unregisterPresent = registerTerminalPresenter(workspaceId ?? "", name, (host) => {
+      releasePresented();
+      presentedHost = host;
+      const element = term.element;
+      if (element && element.parentElement !== host) host.appendChild(element);
+      // Before the flush below, so the bytes just released actually land on
+      // the canvas and a late intersection entry cannot pause them again.
+      releasePresentedRenderer = keepPresentedRendererAwake(term);
+      attachTerminalBridge(host, {
+        getSelection: () => term.getSelection(),
+        paste: (text) => term.paste(text),
+        focus: () => term.focus(),
+      });
+      const disposeMouse = installMouseSelection(host, term, isMac);
+      const disposeBrowse = installBrowseExit(host, term);
+      releasePresentedExtras = () => {
+        disposeMouse();
+        disposeBrowse();
+      };
+      // Un-park even when the IDE tile is hidden. The window is what is on screen.
+      showPane();
+      if (typeof ResizeObserver !== "undefined") {
+        presentedWatch = new ResizeObserver(() => {
+          if (presentedTimer !== undefined) window.clearTimeout(presentedTimer);
+          presentedTimer = window.setTimeout(() => {
+            presentedTimer = undefined;
+            // This window is the one the user is reading, so it takes the size.
+            if (!presentedHost) return;
+            wakePresentedRenderer(term);
+            showPane();
+            sendResize(true);
+          }, 80);
+        });
+        presentedWatch.observe(host);
+      }
+      sendResize(true);
+      if (term.rows > 0) term.refresh(0, term.rows - 1);
+      return releasePresented;
+    });
     /**
      * Make the agent paint its whole screen again at the size this pane holds:
      * one row short, then back, like the server's repaint nudge. An agent
@@ -2401,6 +2509,8 @@ export function AgenticTerminal({
       }, NARROW_SETTLE_MS);
     };
     const scheduleResize = () => {
+      // The Verse window has its own observer. The hidden tile must not fit this pane back to 0.
+      if (presentedHost) return;
       // While a seam or the prompt bar is being dragged the pane still
       // follows, but on a leash: at most one refit per DRAG_REFIT_MS, so the
       // text flows toward the seam in steps instead of freezing until release.
@@ -2554,6 +2664,8 @@ export function AgenticTerminal({
       heldLeadRef.current = holdsSizeLead(leadKey, leadToken);
       releaseSizeLead(leadKey, leadToken);
       // Before the terminal: frees this pane's WebGL context slot.
+      releasePresented();
+      unregisterPresent();
       unregisterLive();
       renderer.dispose();
       term.dispose();

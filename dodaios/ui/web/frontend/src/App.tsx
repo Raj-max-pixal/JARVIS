@@ -64,9 +64,7 @@ import { SubscriptionRealtimeTransportBroker } from "@/components/voice/Subscrip
 import { BrowserRealtimeControl } from "@/components/voice/BrowserRealtimeControl";
 import { cn } from "@/lib/utils";
 import { useTilingStore } from "@/store/tiling";
-
-/** Where the collapsed/expanded choice for the nav sidebar is remembered. */
-const NAV_COLLAPSED_KEY = "jarvis.sidebar.collapsed.v1";
+import { useNavSidebarStore } from "@/store/navSidebar";
 
 /** Sections that fill the whole window instead of sitting beside the nav. */
 const FULLSCREEN_SECTIONS: readonly SectionId[] = ["agents", "docs", "memory"];
@@ -236,26 +234,13 @@ export default function App() {
    * (private-mode WebView, storage disabled) degrades to the expanded default
    * rather than taking the shell down with it.
    */
-  const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(NAV_COLLAPSED_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
+  const navCollapsed = useNavSidebarStore((state) => state.collapsed);
   // Dragging the seam is itself an "I want the sidebar" gesture: a drag that
   // left the rail state behind would snap straight back to icons and read as a
   // broken handle.
   const startSidebarResize = useCallback(
     (event: React.PointerEvent) => {
-      if (navCollapsed) {
-        setNavCollapsed(false);
-        try {
-          window.localStorage.setItem(NAV_COLLAPSED_KEY, "false");
-        } catch {
-          /* storage unavailable — the choice simply does not survive a restart */
-        }
-      }
+      if (navCollapsed) useNavSidebarStore.getState().setCollapsed(false);
       sidebar.startResize(event);
     },
     [navCollapsed, sidebar],
@@ -366,8 +351,10 @@ export default function App() {
       */}
       <main className="relative flex min-w-0 flex-1 flex-col">
         {/* Gray, like the sidebar. The content panel below rounds its
-            top-left corner so this gray shows in the curve. */}
-        <div className="h-8 shrink-0" data-testid="caption-rule" />
+            top-left corner so this gray shows in the curve. The Agents page
+            draws its own columns up to the window's top edge, so the chat
+            stays dark right under the caption. */}
+        {!(sectionFullscreen && activeSection === "agents") && <div className="h-8 shrink-0" data-testid="caption-rule" />}
         <div className={sectionFullscreen ? "flex min-h-0 min-w-0 flex-1 flex-col" : "jarvis-sheet flex min-h-0 min-w-0 flex-1 flex-col"}>
         {/* Outside input software (dictation, text expanders, auto-type) cannot
             reach an elevated window: an OS-level gate the user must be told

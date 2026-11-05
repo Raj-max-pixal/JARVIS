@@ -398,6 +398,9 @@ async def _run_headless(args) -> int:
     the heavy ``import fastapi`` (~450 ms) + load_config + the _init chain OFF the
     time-to-serving path.
     """
+    # This launcher never constructs a native SpeechPipeline. Browser audio
+    # loads its own engines on demand; do not wait for a native warm-up event.
+    os.environ["JARVIS_VOICE"] = "0"
     _bp = os.environ.get("JARVIS_BOOT_PROFILE") == "1"
     _bp_last = time.perf_counter()
 
@@ -624,6 +627,15 @@ async def _run_headless(args) -> int:
     from dodaios.ui.web.server import WebServer
 
     _lx_mark("imports")
+
+    # Before anything can build the agent-chat service: the init chain in
+    # ``server.start`` may build it, and a service built with the host switch
+    # still off finds no turn host and closes every thread turn the host kept
+    # running as "The app restarted" (the background hand-off, 2026-11-02).
+    # The desktop shell turns the same switch on before its API answers.
+    from dodaios.agentic_ide import host_mode
+
+    host_mode.enable()
 
     server = WebServer(cfg)
     _lx_mark("webserver_ctor")

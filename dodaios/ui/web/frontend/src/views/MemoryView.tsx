@@ -1,351 +1,288 @@
 /**
- * The Memory section: what the assistant and its agents remember, as linked
- * Markdown pages in the Obsidian vault.
+ * The Memory section: the personal memory vault (ADR-0044).
  *
- *   ┌────────────┬────────────────────────────────────────────────┐
- *   │ navigation │  toolbar: back · title          health · vault │
- *   │ search     ├────────────────────────────────────────────────┤
- *   │ areas      │  overview | area list | agents | page | map    │
- *   │ agents     │                                                │
- *   └────────────┴────────────────────────────────────────────────┘
+ *   ┌──────────────┬──────────────────────────────────────────────────┐
+ *   │ ● ● ●        │  [ Memories | Files | How it works ]   ⌕   +     │
+ *   │ Library      ├───────────────────────────┬──────────────────────┤
+ *   │  All         │ list of memories           │ inspector:           │
+ *   │  In mind     │  (one sentence each)       │  the memory, where   │
+ *   │  Pinned      │                            │  it came from, its   │
+ *   │ Kinds        │                            │  versions, actions   │
+ *   │  About you … │                            │                      │
+ *   │ ─────        │                            │                      │
+ *   │ export/import│                            │                      │
+ *   └──────────────┴───────────────────────────┴──────────────────────┘
  *
- * Pages are addressed by vault path everywhere (`/api/wiki/index`, `/read`,
- * `/map`), so two files that share a name are never confused again.
+ * "Files" shows the same memory as the Markdown files an export writes, with
+ * a large preview; "How it works" draws what reaches the model and when.
  */
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BookOpen, FileText, FolderKanban, Lightbulb, Settings2, Shapes } from "lucide-react";
+import { Brain, History, Pin, Plus, Search, X } from "lucide-react";
 import { fill, useLocaleChunk, useT } from "@/i18n";
-import { useRunLocale } from "@/components/runs/format";
+import { cn } from "@/lib/utils";
 import { useEventStore } from "@/store/events";
-import { useWikiLive } from "@/hooks/useWikiLive";
-import {
-  MEMORY_KEYS,
-  createMemoryPage,
-  tidyMemory,
-  useMemoryIndex,
-  type MemoryPageSummary,
-} from "@/lib/memoryApi";
-import { KNOWLEDGE_AREAS, SYSTEM_AREA, type MemoryArea } from "@/lib/memoryModel";
 import { EmptyState } from "@/components/ui/empty-state";
-import { MemoryNav, type NavTarget } from "@/components/memory/MemoryNav";
-import { MemoryHome } from "@/components/memory/MemoryHome";
-import { PageList } from "@/components/memory/PageList";
-import { AgentDirectory } from "@/components/memory/AgentDirectory";
-import { PageReader } from "@/components/memory/PageReader";
-import { MemorySearch } from "@/components/memory/MemorySearch";
-import { MemoryHealth } from "@/components/memory/MemoryHealth";
-import { ConfirmDialog, NewPageDialog, type CreatableKind } from "@/components/memory/MemoryDialogs";
-import { ObsidianStatus } from "@/components/wiki/ObsidianStatus";
-import { ObsidianSetupDialog } from "@/components/wiki/ObsidianSetupDialog";
-import type { ObsidianStatus as ObsidianStatusType } from "@/types/setup";
+import {
+  MEMORY_KINDS,
+  VAULT_KEYS,
+  useVaultItems,
+  useVaultOverview,
+} from "@/lib/personalMemoryApi";
+import { IN_MIND_STYLE, KIND_STYLE } from "@/components/memoryVault/kinds";
+import { MemoryBrowser, type Shelf } from "@/components/memoryVault/MemoryBrowser";
+import { MemoryFiles } from "@/components/memoryVault/MemoryFiles";
+import { HowItWorks } from "@/components/memoryVault/HowItWorks";
+import { NewMemorySheet } from "@/components/memoryVault/NewMemorySheet";
+import { Portability } from "@/components/memoryVault/Portability";
 
-// The force-directed map pulls in its own canvas engine; load it on first use.
-const MemoryMap = lazy(() => import("@/components/memory/MemoryMap"));
-
-type Route =
-  | { view: "home" }
-  | { view: "map"; focus: string | null }
-  | { view: "area"; area: MemoryArea }
-  | { view: "page"; path: string };
-
-const AREA_ICONS: Record<string, JSX.Element> = {
-  entities: <Shapes />,
-  projects: <FolderKanban />,
-  concepts: <Lightbulb />,
-  journal: <FileText />,
-  system: <Settings2 />,
-};
-
-function sameRoute(a: Route, b: Route): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
+type Mode = "memories" | "files" | "how";
 
 export function MemoryView(): JSX.Element {
   const t = useT();
   useLocaleChunk("memory");
-  const language = useRunLocale();
-  useWikiLive();
+  const name = useEventStore((s) => s.assistantName) || "Dodaios";
   const queryClient = useQueryClient();
-  const indexQuery = useMemoryIndex();
-  const index = indexQuery.data;
-
-  const [history, setHistory] = useState<Route[]>([{ view: "home" }]);
-  const route = history[history.length - 1];
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [creating, setCreating] = useState<{ title: string; kind: CreatableKind } | null>(null);
-  const [tidy, setTidy] = useState<string[] | null>(null);
+  const [mode, setMode] = useState<Mode>("memories");
+  const [shelf, setShelf] = useState<Shelf>("all");
+  const [query, setQuery] = useState("");
+  const [adding, setAdding] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [setupHint, setSetupHint] = useState<ObsidianStatusType | null>(null);
 
-  const go = useCallback((next: Route) => {
-    setHistory((stack) => (sameRoute(stack[stack.length - 1], next) ? stack : [...stack.slice(-30), next]));
-  }, []);
-  const back = useCallback(() => setHistory((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack)), []);
-  const openPage = useCallback((path: string) => go({ view: "page", path }), [go]);
+  const overview = useVaultOverview();
+  const items = useVaultItems(query, shelf === "history");
 
+  const refresh = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_KEYS.all }), [queryClient]);
   const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast((current) => (current === message ? null : current)), 3200);
   }, []);
 
-  // Ctrl/Cmd+K opens search while the section is on screen.
+  // Cmd/Ctrl+N adds a memory, Cmd/Ctrl+F searches.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "n") {
         event.preventDefault();
-        setSearchOpen((value) => !value);
+        setAdding(true);
+      } else if (key === "f") {
+        event.preventDefault();
+        setMode("memories");
+        document.getElementById("vault-search")?.focus();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Another section asked for a page by name (a contact's wiki link, say).
-  const pageRequest = useEventStore((s) => s.wikiPageRequest);
-  useEffect(() => {
-    if (!pageRequest || !index) return;
-    const wanted = pageRequest.slug.replace(/\\/g, "/").replace(/\.md$/i, "").toLowerCase();
-    const match =
-      index.pages.find((page) => page.path.replace(/\.md$/i, "").toLowerCase() === wanted) ??
-      index.pages.find((page) => page.group === "knowledge" && page.slug.toLowerCase() === wanted.split("/").pop()) ??
-      index.pages.find((page) => page.slug.toLowerCase() === wanted.split("/").pop());
-    if (match) openPage(match.path);
-    else notify(t("memory_view.page_missing_title"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- answer each request once, when the index is there
-  }, [pageRequest?.seq, Boolean(index)]);
+  const inMind = useMemo(() => new Set(overview.data?.in_mind_ids ?? []), [overview.data]);
+  const stats = overview.data?.stats;
+  const byKind = stats?.by_kind ?? {};
+  const all = items.data?.items ?? [];
+  const pinnedCount = all.filter((m) => m.pinned && m.current).length;
 
-  // First visit: walk through the Obsidian setup when it still needs a step.
-  useEffect(() => {
-    const controller = new AbortController();
-    (async () => {
-      try {
-        const [statusResp, stateResp] = await Promise.all([
-          fetch("/api/setup/obsidian/status", { signal: controller.signal }),
-          fetch("/api/setup/state", { signal: controller.signal }),
-        ]);
-        if (!statusResp.ok || !stateResp.ok) return;
-        const status = (await statusResp.json()) as ObsidianStatusType;
-        const state = (await stateResp.json()) as { obsidian_setup_seen: boolean };
-        if (state.obsidian_setup_seen === false && status.recommended_action !== "ok") setSetupHint(status);
-      } catch (err) {
-        if ((err as { name?: string })?.name !== "AbortError") console.debug("[MemoryView] setup probe failed:", err);
-      }
-    })();
-    return () => controller.abort();
-  }, []);
+  if (overview.isError) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <EmptyState icon={<Brain />} title={t("vault.offline_title")} description={t("vault.offline_body")} />
+      </div>
+    );
+  }
 
-  const navigate = useCallback(
-    (target: NavTarget) => {
-      if (target.view === "home") go({ view: "home" });
-      else if (target.view === "map") go({ view: "map", focus: null });
-      else if (target.view === "area") go({ view: "area", area: target.area });
-      else {
-        const agent = index?.agents.find((item) => item.agent_id === target.agentId);
-        const pages = (agent?.pages ?? [])
-          .map((path) => index?.pages.find((page) => page.path === path))
-          .filter((page): page is MemoryPageSummary => Boolean(page));
-        const first =
-          pages.find((page) => page.kind === "memory" && !page.empty) ??
-          pages.find((page) => page.kind === "profile" && !page.empty) ??
-          pages.find((page) => !page.empty) ??
-          pages[0];
-        if (first) openPage(first.path);
-      }
-    },
-    [go, index, openPage],
-  );
-
-  const createPage = useCallback(
-    async (kind: CreatableKind, title: string) => {
-      const result = await createMemoryPage(kind, title);
-      await queryClient.invalidateQueries({ queryKey: MEMORY_KEYS.all });
-      setCreating(null);
-      notify(fill(t("memory_view.created"), { title }));
-      openPage(result.path);
-    },
-    [notify, openPage, queryClient, t],
-  );
-
-  const startTidy = useCallback(async () => {
-    try {
-      const preview = await tidyMemory(true);
-      if (preview.count === 0) notify(t("memory_view.tidy_nothing"));
-      else setTidy(preview.paths);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : String(err));
-    }
-  }, [notify, t]);
-
-  const currentPage = route.view === "page" ? index?.pages.find((page) => page.path === route.path) : undefined;
-  const activeNav: NavTarget["view"] | MemoryArea | null =
-    route.view === "page"
-      ? currentPage?.group === "agents"
-        ? "agents"
-        : null
-      : route.view === "area"
-        ? route.area
-        : route.view;
-
-  const obsidian = useMemo(
-    () => <ObsidianStatus onOpenSetup={(status) => setSetupHint(status)} />,
-    [],
-  );
-
-  const toolbarTitle =
-    route.view === "page"
-      ? currentPage?.title ?? ""
-      : route.view === "area"
-        ? route.area === "agents"
-          ? t("memory_view.area_agents")
-          : t(`memory_view.area_${route.area}`)
-        : route.view === "map"
-          ? t("memory_view.map")
-          : t("memory_view.overview");
+  const shelfTitle =
+    shelf === "all"
+      ? t("vault.shelf_all")
+      : shelf === "in_mind"
+        ? t("vault.shelf_in_mind")
+        : shelf === "pinned"
+          ? t("vault.shelf_pinned")
+          : shelf === "history"
+            ? t("vault.shelf_history")
+            : t(`vault.kind_${shelf}`);
 
   return (
-    <div className="flex h-full min-h-0 bg-sidebar" data-testid="memory-view">
-      <MemoryNav
-        index={index}
-        active={activeNav}
-        activeAgentId={currentPage?.agent_id ?? null}
-        onNavigate={navigate}
-        onSearch={() => setSearchOpen(true)}
-        onNewPage={() => setCreating({ title: "", kind: "entity" })}
-      />
-
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-xl border-l border-t border-border bg-background">
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-          <button
-            type="button"
-            onClick={back}
-            disabled={history.length < 2}
-            aria-label={t("memory_view.back")}
-            title={t("memory_view.back")}
-            className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
-          >
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-          </button>
-          <span className="min-w-0 truncate text-sm font-medium text-foreground" data-testid="memory-toolbar-title">
-            {toolbarTitle}
-          </span>
-          <div className="ml-auto flex items-center gap-1">
-            <MemoryHealth />
-            {obsidian}
+    <div data-testid="memory-vault-view" className="flex h-full min-h-0 flex-col p-3 sm:p-5">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1480px] flex-1 overflow-hidden rounded-2xl border border-border bg-card shadow-float">
+        {/* Sidebar */}
+        <aside className="hidden w-[232px] shrink-0 flex-col border-r border-border bg-sheen/[0.025] md:flex">
+          <div className="flex items-center gap-2 px-4 pb-3 pt-4">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent/15 text-accent">
+              <Brain className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-[13px] font-semibold text-foreground-strong">{t("vault.title")}</p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {stats ? fill(t("vault.count"), { count: stats.current }) : t("vault.loading")}
+              </p>
+            </div>
           </div>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {indexQuery.isLoading ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground" role="status">
-              {t("memory_view.loading")}
-            </div>
-          ) : indexQuery.isError || !index ? (
-            <div className="flex flex-1 items-center justify-center p-8">
-              <EmptyState
-                icon={<BookOpen />}
-                title={t("memory_view.load_error_title")}
-                description={indexQuery.error instanceof Error ? indexQuery.error.message : t("memory_view.load_error_body")}
-              />
-            </div>
-          ) : route.view === "page" ? (
-            <PageReader
-              key={route.path}
-              path={route.path}
-              index={index}
-              language={language}
-              onOpen={openPage}
-              onArea={(area) => go({ view: "area", area })}
-              onShowOnMap={(path) => go({ view: "map", focus: path })}
-              onCreate={(title) => setCreating({ title, kind: "entity" })}
-              onArchived={back}
-              notify={notify}
+          <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" aria-label={t("vault.title")}>
+            <SidebarLabel>{t("vault.library")}</SidebarLabel>
+            <SidebarItem
+              active={mode === "memories" && shelf === "all"}
+              icon={<Brain />}
+              hue="220 9% 56%"
+              label={t("vault.shelf_all")}
+              count={stats?.current}
+              onClick={() => {
+                setMode("memories");
+                setShelf("all");
+              }}
             />
-          ) : route.view === "map" ? (
-            <Suspense fallback={<div className="flex-1" />}>
-              <MemoryMap focus={route.focus} onOpen={openPage} />
-            </Suspense>
-          ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {route.view === "home" ? (
-                <MemoryHome
-                  index={index}
-                  language={language}
-                  onOpen={openPage}
-                  onNewPage={() => setCreating({ title: "", kind: "entity" })}
-                  onShowAgents={() => go({ view: "area", area: "agents" })}
+            <SidebarItem
+              active={mode === "memories" && shelf === "in_mind"}
+              icon={<IN_MIND_STYLE.icon />}
+              hue={IN_MIND_STYLE.hue}
+              label={t("vault.shelf_in_mind")}
+              count={inMind.size}
+              onClick={() => {
+                setMode("memories");
+                setShelf("in_mind");
+              }}
+            />
+            <SidebarItem
+              active={mode === "memories" && shelf === "pinned"}
+              icon={<Pin />}
+              hue="4 86% 58%"
+              label={t("vault.shelf_pinned")}
+              count={pinnedCount}
+              onClick={() => {
+                setMode("memories");
+                setShelf("pinned");
+              }}
+            />
+            <SidebarItem
+              active={mode === "memories" && shelf === "history"}
+              icon={<History />}
+              hue="220 9% 56%"
+              label={t("vault.shelf_history")}
+              onClick={() => {
+                setMode("memories");
+                setShelf("history");
+              }}
+            />
+            <SidebarLabel>{t("vault.kinds_label")}</SidebarLabel>
+            {MEMORY_KINDS.filter((kind) => (byKind[kind] ?? 0) > 0 || shelf === kind).map((kind) => {
+              const Icon = KIND_STYLE[kind].icon;
+              return (
+                <SidebarItem
+                  key={kind}
+                  active={mode === "memories" && shelf === kind}
+                  icon={<Icon />}
+                  hue={KIND_STYLE[kind].hue}
+                  label={t(`vault.kind_${kind}`)}
+                  count={byKind[kind] ?? 0}
+                  onClick={() => {
+                    setMode("memories");
+                    setShelf(kind);
+                  }}
                 />
-              ) : route.area === "agents" ? (
-                <AgentDirectory index={index} language={language} onOpen={openPage} onTidy={() => void startTidy()} />
-              ) : (
-                <AreaList
-                  area={route.area}
-                  pages={index.pages}
-                  language={language}
-                  onOpen={openPage}
-                  onNew={
-                    index.writable && route.area !== "system" && route.area !== "journal"
-                      ? () =>
-                          setCreating({
-                            title: "",
-                            kind: route.area === "projects" ? "project" : route.area === "concepts" ? "concept" : "entity",
-                          })
-                      : undefined
-                  }
-                />
-              )}
-            </div>
-          )}
-        </div>
-      </main>
+              );
+            })}
+          </nav>
+          <Portability onDone={(message) => void refresh().then(() => notify(message))} onError={notify} />
+        </aside>
 
-      <MemorySearch
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        index={index}
-        onOpen={openPage}
-        onCreate={(title) => setCreating({ title, kind: "entity" })}
-      />
-      <NewPageDialog
-        open={creating !== null}
-        initialTitle={creating?.title ?? ""}
-        initialKind={creating?.kind ?? "entity"}
-        onClose={() => setCreating(null)}
-        onCreate={createPage}
-      />
-      <ConfirmDialog
-        open={tidy !== null}
-        title={fill(t("memory_view.tidy_title"), { count: tidy?.length ?? 0 })}
-        description={t("memory_view.tidy_body")}
-        confirmLabel={t("memory_view.tidy_confirm")}
-        items={tidy ?? []}
-        onClose={() => setTidy(null)}
-        onConfirm={async () => {
-          const result = await tidyMemory(false);
-          await queryClient.invalidateQueries({ queryKey: MEMORY_KEYS.all });
-          setTidy(null);
-          notify(fill(t("memory_view.tidy_done"), { count: result.count }));
+        {/* Main */}
+        <section className="flex min-w-0 flex-1 flex-col">
+          <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+            <h1 className="hidden min-w-0 truncate text-[15px] font-semibold text-foreground-strong lg:block lg:w-[180px]">
+              {mode === "memories" ? shelfTitle : mode === "files" ? t("vault.mode_files") : fill(t("vault.mode_how"), { name })}
+            </h1>
+            <Segmented
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "memories", label: t("vault.mode_memories") },
+                { value: "files", label: t("vault.mode_files") },
+                { value: "how", label: t("vault.mode_how_short") },
+              ]}
+            />
+            <div className="ml-auto flex items-center gap-2">
+              {mode === "memories" && (
+                <label className="relative hidden items-center sm:flex">
+                  <Search className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <input
+                    id="vault-search"
+                    data-testid="vault-search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={t("vault.search_placeholder")}
+                    aria-label={t("vault.search_placeholder")}
+                    className="h-8 w-[200px] rounded-lg border border-border bg-sheen/[0.04] pl-8 pr-7 text-[13px] text-foreground placeholder:text-faint-foreground focus-visible:w-[260px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-safe:transition-[width]"
+                  />
+                  {query && (
+                    <button
+                      type="button"
+                      aria-label={t("vault.clear_search")}
+                      onClick={() => setQuery("")}
+                      className="absolute right-2 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </label>
+              )}
+              <button
+                type="button"
+                data-testid="vault-add"
+                onClick={() => setAdding(true)}
+                title={t("vault.add_title")}
+                aria-label={t("vault.add_title")}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-foreground shadow-sm hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus className="h-4 w-4" />
+                <span className="hidden sm:inline">{t("vault.add")}</span>
+              </button>
+            </div>
+          </header>
+
+          <div className="min-h-0 flex-1">
+            {mode === "memories" && (
+              <MemoryBrowser
+                shelf={shelf}
+                query={query}
+                items={all}
+                loading={items.isLoading}
+                inMind={inMind}
+                name={name}
+                onChanged={refresh}
+                notify={notify}
+                onAdd={() => setAdding(true)}
+              />
+            )}
+            {mode === "files" && <MemoryFiles />}
+            {mode === "how" && overview.data && (
+              <HowItWorks
+                name={name}
+                overview={overview.data}
+                onShowInMind={() => {
+                  setMode("memories");
+                  setShelf("in_mind");
+                }}
+              />
+            )}
+          </div>
+        </section>
+      </div>
+
+      <NewMemorySheet
+        open={adding}
+        name={name}
+        onClose={() => setAdding(false)}
+        onSaved={async (message) => {
+          setAdding(false);
+          await refresh();
+          notify(message);
         }}
+        onError={notify}
       />
-      {setupHint && (
-        <ObsidianSetupDialog
-          open
-          onClose={() => setSetupHint(null)}
-          initialStatus={setupHint}
-          onComplete={async () => {
-            try {
-              await fetch("/api/setup/state/obsidian-seen", { method: "POST" });
-            } catch (err) {
-              console.debug("[MemoryView] mark-obsidian-seen failed:", err);
-            }
-          }}
-        />
-      )}
+
       {toast && (
         <div
           role="status"
-          data-testid="memory-toast"
-          className="pointer-events-none fixed bottom-10 right-6 z-[110] max-w-sm rounded-lg border border-border bg-popover px-4 py-3 text-sm text-foreground shadow-float"
+          className="pointer-events-none fixed bottom-8 left-1/2 z-[70] -translate-x-1/2 rounded-full border border-border bg-popover/95 px-4 py-2 text-[13px] text-popover-foreground shadow-float backdrop-blur"
         >
           {toast}
         </div>
@@ -354,43 +291,79 @@ export function MemoryView(): JSX.Element {
   );
 }
 
-function AreaList({
-  area,
-  pages,
-  language,
-  onOpen,
-  onNew,
-}: {
-  area: MemoryArea;
-  pages: MemoryPageSummary[];
-  language: string;
-  onOpen: (path: string) => void;
-  onNew?: () => void;
-}) {
-  const t = useT();
-  const def = [...KNOWLEDGE_AREAS, SYSTEM_AREA].find((item) => item.id === area) ?? KNOWLEDGE_AREAS[0];
-  const inArea = pages.filter((page) => def.matches(page));
+function SidebarLabel({ children }: { children: React.ReactNode }) {
   return (
-    <PageList
-      title={t(def.labelKey)}
-      description={t(def.descriptionKey)}
-      pages={inArea}
-      language={language}
-      onOpen={onOpen}
-      emptyIcon={AREA_ICONS[area] ?? <BookOpen />}
-      emptyTitle={t("memory_view.area_empty_title")}
-      emptyBody={t(`memory_view.area_${area}_empty`)}
-      actions={
-        onNew ? (
-          <button
-            type="button"
-            onClick={onNew}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
-          >
-            {t("memory_view.new_page")}
-          </button>
-        ) : undefined
-      }
-    />
+    <p className="px-2.5 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-faint-foreground">{children}</p>
   );
 }
+
+function SidebarItem({
+  active,
+  icon,
+  hue,
+  label,
+  count,
+  onClick,
+}: {
+  active: boolean;
+  icon: React.ReactNode;
+  hue: string;
+  label: string;
+  count?: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active ? "bg-accent-soft text-foreground-strong" : "text-foreground hover:bg-sheen/[0.05]",
+      )}
+    >
+      <span
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md [&>svg]:h-3 [&>svg]:w-3"
+        style={{ backgroundColor: `hsl(${hue} / 0.16)`, color: `hsl(${hue})` }}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {count !== undefined && <span className="text-[11px] tabular-nums text-muted-foreground">{count}</span>}
+    </button>
+  );
+}
+
+function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: Array<{ value: T; label: string }>;
+}) {
+  return (
+    <div role="tablist" className="flex h-8 items-center rounded-lg bg-sheen/[0.06] p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="tab"
+          aria-selected={value === option.value}
+          data-testid={`vault-mode-${option.value}`}
+          onClick={() => onChange(option.value)}
+          className={cn(
+            "h-7 whitespace-nowrap rounded-md px-3 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            value === option.value
+              ? "bg-surface-raised text-foreground-strong shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+

@@ -1,7 +1,11 @@
 """Shared pytest fixtures for all test suites."""
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -10,6 +14,47 @@ from urllib.parse import urlsplit
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+# Taken before the first dodaios import, which could already write there.
+_REPO_DATA_DIR = _REPO_ROOT / "data"
+_REPO_DATA_DIR_EXISTED = _REPO_DATA_DIR.exists()
+
+# The tracked files a session must leave alone, recorded before any test runs
+# (see pytest_sessionfinish). None outside a git checkout: nothing to judge.
+from scripts.ci import checkout_guard  # noqa: E402
+
+_TRACKED_BEFORE = checkout_guard.snapshot(_REPO_ROOT, untracked=False)
+
+# Hermetic data dir (#458). ``dodaios.core.config.DATA_DIR`` is resolved once,
+# at import, from ``JARVIS_DATA_DIR`` or ``<repo>/data``. In an installer-managed
+# checkout ``<repo>/data`` is the user's live data, so any store without its own
+# test redirect (the cost ledger, the society databases, ...) would write there.
+# Point the whole session at a fresh temp dir before the first dodaios import.
+# A value inherited from the caller is overridden on purpose: a shell or an app
+# pane may carry the user's real data dir. Tests that need a specific value
+# still monkeypatch it themselves; subprocesses inherit the temp dir.
+_TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="dodaios-test-data-"))
+os.environ["JARVIS_DATA_DIR"] = str(_TEST_DATA_DIR)
+atexit.register(shutil.rmtree, _TEST_DATA_DIR, ignore_errors=True)
+
+# ``memory.data_dir`` (the anchor for the session, chat, society and
+# self-build stores) defaults to the cwd-relative "./data", which is the
+# checkout's data dir when pytest runs from the repo root. Default it to the
+# same temp dir; a test or TOML that sets the field explicitly still wins.
+from dodaios.core.config import MemoryConfig  # noqa: E402
+
+MemoryConfig.model_fields["data_dir"].default = str(_TEST_DATA_DIR)
+MemoryConfig.model_rebuild(force=True)
+
+# The provider switches persist into the drift baseline under scripts/, a
+# tracked file; a test that switched the brain without its own redirect
+# rewrote it (brain.primary -> "openrouter"). Every session writes to a temp
+# copy instead, so readers still see real content.
+_TEST_DRIFT_BASELINE = _TEST_DATA_DIR / "config-soll.json"  # i18n-allow: filename
+_REPO_DRIFT_BASELINE = _REPO_ROOT / "scripts" / "config-soll.json"  # i18n-allow: filename
+if _REPO_DRIFT_BASELINE.is_file():
+    shutil.copyfile(_REPO_DRIFT_BASELINE, _TEST_DRIFT_BASELINE)
+os.environ["JARVIS_DRIFT_BASELINE_FILE"] = str(_TEST_DRIFT_BASELINE)
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -22,6 +67,90 @@ def pytest_configure(config) -> None:  # noqa: ANN001
         "markers",
         "no_auto_web_auth: use explicit credentials against the production web boundary",
     )
+
+
+def _repo_data_dir_leftovers() -> list[str]:
+    """What a session left in ``<repo>/data`` when it started without one.
+
+    Only a checkout that had no ``data/`` at session start is judged: there any
+    entry is the suite's own. A checkout that runs the app owns a live
+    ``data/`` that the app writes to while the tests run, so it is skipped.
+    """
+    if _REPO_DATA_DIR_EXISTED or not _REPO_DATA_DIR.exists():
+        return []
+    entries = sorted(
+        p.relative_to(_REPO_ROOT).as_posix() for p in _REPO_DATA_DIR.rglob("*")
+    )
+    return entries or [_REPO_DATA_DIR.relative_to(_REPO_ROOT).as_posix() + "/"]
+
+
+def _changed_tracked_files() -> list[str]:
+    """Tracked files whose state changed since the session started."""
+    if _TRACKED_BEFORE is None:
+        return []
+    after = checkout_guard.snapshot(_REPO_ROOT, untracked=False)
+    if after is None:
+        return []
+    return checkout_guard.changes(_TRACKED_BEFORE, after)
+
+
+def _fail_session(session, title: str, message: str) -> None:  # noqa: ANN001
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.ensure_newline()
+        reporter.write_sep("=", title, red=True)
+        reporter.write_line(message)
+    else:
+        sys.stderr.write(message + "\n")
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ANN001, ARG001
+    """Fail the session when the suite wrote into the checkout.
+
+    Two leaks are judged: entries under ``<repo>/data`` (#458; every store must
+    follow the session temp dir above) and tracked files the session rewrote
+    (the drift baseline and friends; write to a temp path instead).
+    Checked once, by the controlling process (an xdist worker would see its
+    siblings' writes).
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+    leftovers = _repo_data_dir_leftovers()
+    if leftovers:
+        _fail_session(
+            session,
+            "stray writes into <repo>/data",
+            "The test session wrote into the checkout's data dir, which every store "
+            "must leave alone (#458). Derive the path from the configured data dir:\n"
+            + checkout_guard.describe(leftovers),
+        )
+    changed = _changed_tracked_files()
+    if changed:
+        _fail_session(
+            session,
+            "tracked files changed by the tests",
+            "The test session modified tracked files in the checkout. Point the "
+            "writer at a temp path (tmp_path, a monkeypatched path, or the "
+            "session's JARVIS_DATA_DIR):\n" + checkout_guard.describe(changed),
+        )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_user_environment_writes():
+    """No test persists a ``JARVIS__*`` variable into the real user environment.
+
+    The provider switches mirror their choice into the Windows User-scope
+    environment (``HKCU\\Environment``), which outlives the test run: a brain
+    switch under test left ``JARVIS__BRAIN__PRIMARY=openrouter`` behind, and
+    the next app start booted that provider. ``os.environ`` is still updated;
+    a test that checks the registry layer patches the writer itself.
+    """
+    from dodaios.core import config_writer
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(config_writer, "_set_user_env_var_winreg", lambda name, value: None)
+        yield
 
 
 @pytest.fixture(autouse=True)

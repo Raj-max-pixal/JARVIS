@@ -23,22 +23,35 @@ connected project folder that holds the thread's folder.
 
 ## Sidebar
 
-Projects with their threads, newest first. A thread is named by the title its
+On top, three start rows: New thread, New team thread (both in the project in
+view, else the first one) and Dodaios Live. Below, "Pinned" and "Projects"
+(its folder icon connects another folder), each project with its threads,
+newest first. A thread is named by the title its
 CLI gave the conversation (Claude Code's session title, Codex's thread name —
 `cli_title` on `GET /api/agent-chat/sessions?surface=agent`), until the person
-renames it; before the CLI names it, the first message is the name. The row's
-end shows the CLI's logo, a spinner while it works, an amber dot while it waits
-for an approval and a blue dot for news since it was last opened.
+renames it; before the CLI names it, the first message is the name. The row
+starts with the CLI's logo; its end shows how long ago it last moved, a spinner
+while it works, an amber dot while it waits for an approval and a blue dot for
+news since it was last opened.
 
 ## Thread view
 
-- **New thread:** the small plus on a project row. The empty thread asks what
+- **New thread:** the top row, or the pen on a hovered project row. The empty thread asks what
   to build in the project; the project name is a picker.
+- **Title bar:** an open thread has the same controls as a grid pane's
+  header: review the changes in the thread's folder, show them in the Git
+  tab, more actions (rename, new thread, archive), fold the app sidebar to
+  its rail for more room, a new thread in the project, and close — which
+  moves the thread to the archive (not while it works or waits for an
+  approval).
 - **Conversation:** the person's messages on the right, the agent's answer as
   reading text, the work in between as folded rows ("Ran 3 commands, read 2
   files") that open to each call, its diff or its output. A running turn ends
   in a live "Working for 12s" line; a finished one says how long it worked and
-  which files it changed.
+  which files it changed. When the agent has written its message but still
+  waits for background tasks it started (a test run, a push), the line says
+  so instead: "Waiting for 2 background tasks · 21m 40s", with the tasks
+  named. The agent picks up again when they finish.
 - **Composer:** one toolbar — coding agent and model, reasoning effort, access
   mode — beside the paperclip and the send button. A new thread starts on the
   agent, model, effort and access the person picked last (else the newest

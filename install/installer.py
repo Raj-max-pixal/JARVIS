@@ -41,6 +41,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import stat
@@ -175,7 +176,12 @@ def run_quiet(cmd: list[str], *, label: str, cwd: Path | None = None) -> int:
 
 
 def run_captured(
-    cmd: list[str], *, label: str, cwd: Path | None = None, timeout: float | None = None
+    cmd: list[str],
+    *,
+    label: str,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a captured command behind the standard gold spinner.
 
@@ -190,7 +196,7 @@ def run_captured(
     def _run() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            encoding="utf-8", errors="replace", timeout=timeout, env=env,
         )
 
     if console.is_terminal:
@@ -403,6 +409,138 @@ def installed_legacy_distributions() -> tuple[str, ...]:
     return tuple(found)
 
 
+_PIP_CHECK_LINE = re.compile(
+    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*) \S+ "
+    r"(?:has requirement |requires |is not supported on this platform)"
+)
+
+# Runs inside the venv's interpreter. For each distribution ``pip check``
+# named, it answers whether that distribution is HOST-ONLY: installed outside
+# the venv's own site-packages and not part of Dodaios' dependency closure
+# (every extra counted, so the closure errs on the large side).
+_HOST_ONLY_PROBE = r'''
+import json, re, sys
+from importlib import metadata
+from pathlib import Path
+from packaging.requirements import Requirement
+
+def canon(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+venv = Path(sys.prefix).resolve()
+needed = set()
+queue = [("dodaios", None)]
+while queue:
+    name, extras = queue.pop()
+    key = canon(name)
+    if key in needed:
+        continue
+    needed.add(key)
+    try:
+        dist = metadata.distribution(name)
+    except metadata.PackageNotFoundError:
+        continue
+    if extras is None:
+        extras = set(dist.metadata.get_all("Provides-Extra") or [])
+    for raw in dist.requires or []:
+        req = Requirement(raw)
+        if req.marker is not None and not any(
+            req.marker.evaluate({"extra": extra}) for extra in ("", *extras)
+        ):
+            continue
+        queue.append((req.name, set(req.extras)))
+
+verdict = {}
+for name in json.loads(sys.argv[1]):
+    try:
+        where = Path(metadata.distribution(name).locate_file("")).resolve()
+    except metadata.PackageNotFoundError:
+        verdict[canon(name)] = False
+        continue
+    inside = where == venv or venv in where.parents
+    verdict[canon(name)] = not inside and canon(name) not in needed
+print(json.dumps(verdict))
+'''
+
+
+def _canonical_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pip_check_subjects(output: str) -> list[str] | None:
+    """The distributions whose requirements ``pip check`` reported as broken.
+
+    ``None`` when a line is not in a known form: an unknown report is never
+    waved through.
+    """
+    subjects: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("WARNING:", "DEPRECATION:")):
+            continue
+        match = _PIP_CHECK_LINE.match(line)
+        if match is None:
+            return None
+        subjects.append(match.group("name"))
+    return subjects
+
+
+def _host_only_distributions(names: list[str]) -> dict[str, bool] | None:
+    """Ask the venv's interpreter which of ``names`` are host-only (see the probe)."""
+    try:
+        result = subprocess.run(
+            [str(venv_python()), "-c", _HOST_ONLY_PROBE, json.dumps(names)],
+            cwd=repo_root(), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        verdict = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    return verdict if isinstance(verdict, dict) else None
+
+
+def dependency_check_passes(cmd: list[str], *, label: str) -> bool:
+    """Run ``pip check``; tolerate conflicts that live only in host packages.
+
+    A Linux desktop venv links the host's site-packages (install.sh, H-01), so
+    ``pip check`` also judges packages the host installed for other tools. A
+    broken requirement of such a package cannot affect Dodaios as long as the
+    package lives outside the venv and Dodaios does not depend on it, yet it
+    stopped whole updates (#1018). Those conflicts become a warning. Anything
+    else, or a report this cannot read, stops the install as before.
+    """
+    try:
+        result = run_captured(cmd, label=label, cwd=repo_root(), timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        console.print(f"[bad]│  ✗ {label} could not run ({rich_escape(str(exc))})[/]")
+        return False
+    if result.returncode == 0:
+        return True
+    output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    subjects = _pip_check_subjects(output)
+    verdict = _host_only_distributions(subjects) if subjects else None
+    blocking = (
+        None if verdict is None or subjects is None
+        else [name for name in subjects if not verdict.get(_canonical_name(name))]
+    )
+    lines = output.splitlines()[-40:]
+    if blocking is None or blocking:
+        console.print(f"[bad]│  ✗ {label} found broken requirements[/]")
+        for line in lines:
+            console.print(f"[muted]│      {rich_escape(line)}[/]")
+        return False
+    note("warning: packages installed outside Dodaios' environment have broken")
+    note("requirements; Dodaios does not use them, so the install continues:")
+    for line in lines:
+        note(f"  {rich_escape(line)}")
+    return True
+
+
 def step_pip_install(*, with_desktop: bool, with_voice_local: bool, dry_run: bool) -> None:
     from scripts.native_crypto_index import pip_options
 
@@ -416,19 +554,20 @@ def step_pip_install(*, with_desktop: bool, with_voice_local: bool, dry_run: boo
     # installs on Windows/macOS/Linux (each OS pulls only its wheels). Every
     # package-pinning line carries ``--hash=sha256:...`` so an attacker who compromises a PyPI
     # mirror cannot swap out a transitive dependency without invalidating
-    # the lockfile signature published in the GitHub Release. The desktop
-    # branch installs with ``--require-hashes`` so unhashed/mismatched
-    # entries fail-closed. The headless branch keeps ``pip install -e .`` —
-    # the cloud-first VPS path resolves from ``pyproject.toml`` directly
-    # because the lockfile predates Wave 6 hash pinning on transient bumps
-    # and ``pip install --require-hashes`` is the new contract going
-    # forward. See ``docs/supply-chain/threat-model.md`` §11.
+    # the lockfile signature published in the GitHub Release. Both profiles
+    # install it with ``--require-hashes`` so unhashed/mismatched entries
+    # fail-closed. The lockfile holds only the base dependencies, so the
+    # headless profile stays on the torch-free base floor. Headless used to
+    # resolve ``pip install -e .`` from the open ``pyproject.toml`` ranges
+    # instead, and on a Linux venv that links the host's site-packages pip then
+    # took any host copy as "already satisfied", so the server ran on host
+    # versions (#456). Exact pins install venv-local copies unless the host has
+    # the very same version. See ``docs/supply-chain/threat-model.md`` §11.
+    lockfile = pip + ["install", "--require-hashes", "-r", "requirements.txt"]
     if with_desktop:
-        runtime_step = ("runtime dependencies (hash-pinned lockfile)",
-                        pip + ["install", "--require-hashes", "-r", "requirements.txt"])
+        runtime_step = ("runtime dependencies (hash-pinned lockfile)", lockfile)
     else:
-        runtime_step = ("runtime dependencies (cloud-first base)",
-                        pip + ["install", *pip_options(), "-e", "."])
+        runtime_step = ("runtime dependencies (cloud-first base, hash-pinned lockfile)", lockfile)
 
     plans: list[tuple[str, list[str]]] = []
     # The checkout used to be installed under the distribution's earlier name.
@@ -468,7 +607,10 @@ def step_pip_install(*, with_desktop: bool, with_voice_local: bool, dry_run: boo
         return
 
     for label, cmd in plans:
-        rc = run_quiet(cmd, label=label, cwd=repo_root())
+        if cmd[len(pip):] == ["check"]:
+            rc = 0 if dependency_check_passes(cmd, label=label) else 1
+        else:
+            rc = run_quiet(cmd, label=label, cwd=repo_root())
         if rc != 0:
             # The advertised desktop install is the [full] profile. Continuing
             # after that profile fails would advertise a ready app without the
@@ -750,6 +892,36 @@ def step_desktop_integration(*, enabled: bool, dry_run: bool) -> bool:
     return False
 
 
+# The UI build (tsc + vite) outgrows V8's default heap on a small machine: the
+# macOS installer smoke runner (7 GB) aborted in vite with "Abort trap: 6"
+# (#1033). A user's own NODE_OPTIONS always wins.
+UI_BUILD_NODE_OPTIONS = "--max-old-space-size=4096"
+# Lines worth keeping from a long build log even when they are not in its tail:
+# a V8 OOM prints its "FATAL ERROR ... heap out of memory" header first and
+# then a 50-frame native stack that pushes it out of any short tail.
+_UI_BUILD_KEY_LINE = r"fatal|error|heap|out of memory|abort|killed|signal"
+
+
+def _ui_build_env() -> dict[str, str]:
+    env = dict(os.environ)
+    if not env.get("NODE_OPTIONS", "").strip():
+        env["NODE_OPTIONS"] = UI_BUILD_NODE_OPTIONS
+    return env
+
+
+def _ui_build_diagnostics(output: str, *, tail: int = 15, key_lines: int = 10) -> list[str]:
+    """The tail of a failed build's output, preceded by its key lines from before it."""
+    import re
+
+    lines = [line for line in output.splitlines() if line.strip()]
+    head, last = lines[:-tail], lines[-tail:]
+    pattern = re.compile(_UI_BUILD_KEY_LINE, re.IGNORECASE)
+    keys = [line for line in head if pattern.search(line)][:key_lines]
+    if keys:
+        return [*keys, "...", *last]
+    return last
+
+
 def _build_ui_bundle(index: Path) -> bool:
     """Build the UI for a checkout that has none (main tracks no bundle).
 
@@ -757,20 +929,59 @@ def _build_ui_bundle(index: Path) -> bool:
     branch. It needs npm; without it the caller says so and stops.
     """
     npm = shutil.which("npm")
-    frontend = index.parent.parent / "frontend"
-    if npm is None or not (frontend / "package-lock.json").is_file():
+    if npm is None:
+        note("no prebuilt UI found and Node.js/npm is not installed to build one")
+        note(
+            "release installs always ship the UI; a checkout of main needs "
+            "`npm run build` in dodaios/ui/web/frontend"
+        )
         return False
+    frontend = index.parent.parent / "frontend"
+    if not (frontend / "package-lock.json").is_file():
+        note(
+            "no prebuilt UI found and dodaios/ui/web/frontend/package-lock.json "
+            "is missing"
+        )
+        return False
+    env = _ui_build_env()
     for args, label in (
         (["ci"], "installing the UI build tools (npm ci)"),
         (["run", "build"], "building the UI (npm run build)"),
     ):
+        cmd_name = f"npm {' '.join(args)}"
         try:
-            result = run_captured([npm, *args], cwd=frontend, label=label, timeout=1800)
-        except (OSError, subprocess.TimeoutExpired):
+            result = run_captured(
+                [npm, *args], cwd=frontend, label=label, timeout=1800, env=env
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            note(f"UI build command '{cmd_name}' failed: {rich_escape(str(exc))}")
             return False
         if result.returncode != 0:
+            note(
+                f"UI build command '{cmd_name}' failed with exit code "
+                f"{result.returncode}"
+            )
+            combined = "\n".join(
+                part.strip()
+                for part in (
+                    getattr(result, "stdout", "") or "",
+                    getattr(result, "stderr", "") or "",
+                )
+                if part and part.strip()
+            )
+            output_tail = _ui_build_diagnostics(combined)
+            if output_tail:
+                note("npm output (key lines, then the tail):")
+                for line in output_tail:
+                    note(rich_escape(line))
             return False
-    return index.is_file()
+    if not index.is_file():
+        note(
+            "UI build finished (npm run build exited 0) but build output is "
+            "incomplete: dodaios/ui/web/dist/index.html was not produced"
+        )
+        return False
+    return True
 
 
 def step_ui_bundle_check() -> bool:
@@ -783,9 +994,6 @@ def step_ui_bundle_check() -> bool:
     dist = repo_root() / "dodaios" / "ui" / "web" / "dist"
     index = dist / "index.html"
     if not index.is_file() and not _build_ui_bundle(index):
-        note("no prebuilt UI found and Node.js/npm is not installed to build one")
-        note("release installs always ship the UI; a checkout of main needs "
-             "`npm run build` in dodaios/ui/web/frontend")
         return False
     import re
 
@@ -921,7 +1129,7 @@ def step_launch(*, headless: bool, dry_run: bool) -> None:
     # We deliberately do not wait for the App — the installer returns control
     # to the user's shell as soon as the App is spawned.
     try:
-        subprocess.Popen(cmd, cwd=repo_root(), close_fds=True)
+        subprocess.Popen(cmd, cwd=repo_root(), close_fds=True, env=app_launch_env())
     except OSError as exc:
         console.print(f"[bad]│    Could not launch: {exc}[/]")
         console.print(f"[muted]     Open it by hand:[/] [brand]{hint}[/]")
@@ -932,6 +1140,19 @@ def step_launch(*, headless: bool, dry_run: bool) -> None:
     # command behind — this is the line the user needs when the window never
     # appears (macOS first-launch permission prompt, background launch, …).
     console.print(f"[muted]     If it doesn't open, run:[/] [brand]{hint}[/]")
+
+
+def app_launch_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for the launched app: the installer's own, minus its git-only knobs.
+
+    The shell stage sets ``GIT_LFS_SKIP_SMUDGE`` for its clone so an install
+    never pulls the Verse's LFS binaries. The app (coding-agent panes, git in
+    the user's own repos) must not inherit it, or LFS files there would come
+    out as pointer files.
+    """
+    env = dict(os.environ if base is None else base)
+    env.pop("GIT_LFS_SKIP_SMUDGE", None)
+    return env
 
 
 def step_cli_links(*, dry_run: bool) -> None:
@@ -1121,7 +1342,15 @@ def main(argv: list[str] | None = None) -> int:
     step_macos_bundle_name(dry_run=args.dry_run)
     if not step_desktop_integration(enabled=with_desktop, dry_run=args.dry_run):
         sys.exit(4)
-    if not step_ui_bundle_check() and not args.dry_run:
+    # --dry-run must not compile. step_ui_bundle_check builds a missing bundle
+    # with npm, and main does not track dist. On the macOS suite that compile
+    # ran inside a dry-run test until the file budget killed it.
+    if args.dry_run:
+        console.print(
+            "[muted]│    (dry-run) check the UI build, and create it with npm "
+            "when the checkout has none[/]"
+        )
+    elif not step_ui_bundle_check():
         sys.exit(5)
 
     # Summary FIRST, launch LAST: when the app window appears, the terminal

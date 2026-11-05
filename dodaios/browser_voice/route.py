@@ -42,11 +42,36 @@ _UNSAFE_FALLBACK_DETAIL = (
     "closed without replaying audio through the classic pipeline to avoid "
     "duplicate actions."
 )
-_USAGE_FALLBACK_DISABLED_DETAIL = (
-    "The selected voice connection could not start. Check its connection and "
-    "model settings. Automatic usage-billed API fallback is disabled; "
+_USAGE_FALLBACK_DISABLED_NOTE = (
+    "Automatic usage-billed API fallback is disabled; "
     "Dodaios did not switch to another provider."
 )
+_USAGE_FALLBACK_DISABLED_DETAIL = (
+    "The selected voice connection could not start. Check its connection and "
+    "model settings. " + _USAGE_FALLBACK_DISABLED_NOTE
+)
+
+
+def _fallback_disabled_detail(error: BaseException | str | None) -> str:
+    """The person-facing text when the selected live provider cannot start.
+
+    A classified subscription failure (plan not offered, reconnect needed,
+    allowance exhausted, ...) keeps its static message so the person learns
+    what to fix. Anything else gets the generic text: raw provider detail
+    never reaches the surface.
+    """
+    try:
+        from dodaios.plugins.realtime.openai_subscription_live import (
+            static_failure_message,
+        )
+
+        reason = static_failure_message(error)
+    except Exception:  # noqa: BLE001 - the generic text is always safe
+        log.debug("browser_voice: failure classification unavailable", exc_info=True)
+        reason = None
+    if not reason:
+        return _USAGE_FALLBACK_DISABLED_DETAIL
+    return f"{reason} {_USAGE_FALLBACK_DISABLED_NOTE}"
 # The close reason a browser shows the person when the classic chain cannot be
 # built. WebSocket close reasons are capped at 123 bytes.
 _SPEECH_STACK_UNAVAILABLE_REASON = (
@@ -54,8 +79,8 @@ _SPEECH_STACK_UNAVAILABLE_REASON = (
     "provider is missing. Check API Keys."
 )
 
-# BCP-47 from the canonical per-turn resolver (de/en/es/pt).
-_LANG_MAP = {"de": "de-DE", "en": "en-US", "es": "es-ES", "pt": "pt-PT"}
+# BCP-47 from the canonical per-turn resolver, including pinned French.
+_LANG_MAP = {"de": "de-DE", "en": "en-US", "es": "es-ES", "pt": "pt-PT", "fr": "fr-FR"}
 
 
 def browser_voice_enabled(cfg: Any) -> bool:
@@ -72,7 +97,11 @@ def browser_voice_enabled(cfg: Any) -> bool:
 
 
 def _resolve_language(cfg: Any) -> str:
-    pin = getattr(getattr(cfg, "brain", None), "reply_language", "") or ""
+    pin = str(getattr(getattr(cfg, "brain", None), "reply_language", "") or "").strip().lower()
+    # French is a spoken pin without a translated phrase catalog, so the
+    # catalog resolver would narrow it to English. The voice still follows it.
+    if pin in _LANG_MAP:
+        return _LANG_MAP[pin]
     language = resolve_output_language(pin, "", "", default=DEFAULT_LOCALE)
     return _LANG_MAP.get(language, _LANG_MAP[DEFAULT_LOCALE])
 
@@ -252,6 +281,7 @@ def _build_classic_browser_session(
         language_code=_resolve_language(cfg),
         bus=bus,
         config=cfg,
+        owns_brain=True,
     )
 
 
@@ -507,7 +537,9 @@ async def browser_voice_ws(ws: WebSocket) -> None:
     dropped_audio_frames = 0
     audio_sender_failed = asyncio.Event()
 
-    async def _switch_to_classic(reason: str) -> bool:
+    async def _switch_to_classic(
+        reason: str, error: BaseException | None = None
+    ) -> bool:
         nonlocal session
         if not bool(getattr(session, "is_realtime", False)):
             return False
@@ -522,7 +554,9 @@ async def browser_voice_ws(ws: WebSocket) -> None:
                 await _send_json(
                     {
                         "type": "provider_error",
-                        "error": _USAGE_FALLBACK_DISABLED_DETAIL,
+                        "error": _fallback_disabled_detail(
+                            error if error is not None else reason
+                        ),
                     }
                 )
             except Exception:  # noqa: BLE001 - surface may already be gone
@@ -591,7 +625,7 @@ async def browser_voice_ws(ws: WebSocket) -> None:
                 timeout=_TRANSPORT_SEND_TIMEOUT_S,
             )
         except Exception as exc:  # noqa: BLE001 - cross to classic once
-            if not await _switch_to_classic(str(exc)):
+            if not await _switch_to_classic(str(exc), exc):
                 raise
             await asyncio.wait_for(
                 session.handle_audio_frame(data),
@@ -675,7 +709,7 @@ async def browser_voice_ws(ws: WebSocket) -> None:
                         if not can_fallback:
                             log.warning("browser_voice: control handling failed: %s", exc)
                             break
-                        if not await _switch_to_classic(str(exc)):
+                        if not await _switch_to_classic(str(exc), exc):
                             break
     finally:
         output.close()

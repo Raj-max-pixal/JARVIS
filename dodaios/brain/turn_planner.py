@@ -80,7 +80,12 @@ _LOOKUP_SHAPE_RE = re.compile(
     r"zeig\w*|lies|lese|list\w*|"
     r"find\w*|such\w*|pruef\w*|fass\w*|habe ich|hab ich|gibt es|"
     r"que|cuando|donde|cual\w*|quien|cuantos|muestra|lee|lista|"
-    r"busca|revisa|resume|tengo|hay)\b|"  # i18n-allow: multilingual speech-input matching data
+    r"busca|revisa|resume|tengo|hay|"  # i18n-allow: multilingual speech-input matching data
+    r"quoi|quel\w*|quand|pourquoi|combien|comment|"  # i18n-allow: French speech input
+    r"montre\w*|affiche\w*|cherche\w*|recherche\w*|trouve\w*|verifie\w*|"  # i18n-allow: French
+    r"regarde\w*|est[\s-]ce\s+qu(?:e|i|['\u2019])|y\s+a[\s-]t[\s-]il|il\s+y\s+a|"  # i18n-allow: French
+    r"(?:tu\s+as|t['’]?\s?as)\s+(?:pas\s+)?vu|as[\s-]tu\s+vu|dis[\s-]moi|"  # i18n-allow: French
+    r"donne[\s-]moi|donnez[\s-]moi)\b|"  # i18n-allow: French speech input
     # Indirect questions. Spoken language wraps a lookup in a statement —
     # "ich möchte fragen, ob mein PC überlastet ist" carries no question word
     # and no question mark, so every question-word rule above missed it and
@@ -129,7 +134,8 @@ _INSTRUCTIONAL_RE = re.compile(
 _OWNERSHIP_RE = re.compile(
     r"\b(?:my|mine|our|we|about me|remember me|"
     r"mein\w*|unser\w*|wir|ueber mich|uber mich|erinner\w* mich|"  # i18n-allow: speech input
-    r"mi|mis|mio|nuestr\w*|sobre mi|recuerd\w* de mi)\b"  # i18n-allow: speech input
+    r"mi|mis|mio|nuestr\w*|sobre mi|recuerd\w* de mi|"  # i18n-allow: speech input
+    r"mon|ma|mes|notre|nos|sur moi)\b"  # i18n-allow: French speech input
 )
 # Explicit recall of the user's own past ("weisst du noch", "wann war ich",
 # "was war nochmal ...") — the one personal-data shape that carries NO
@@ -168,7 +174,15 @@ _CURRENT_RE = re.compile(
     r"aktuell\w*|neueste\w*|heute|morgen|jetzt|kuerzlich|nachrichten|"
     r"wetter|status|verfuegbar|online|"  # i18n-allow: speech input
     r"actual\w*|ultimo\w*|hoy|manana|ahora|reciente\w*|noticias|"
-    r"clima|tiempo|estado|disponible)\b"  # i18n-allow: multilingual speech-input matching data
+    r"clima|tiempo|estado|disponible|"  # i18n-allow: multilingual speech-input matching data
+    # French: "dernier" is both "last" and "latest"; "la derniere fois" is the
+    # person's own past, never a freshness request.
+    r"actuel\w*|aujourd\W?\s?hui|ce\s+soir|demain|maintenant|en\s+ce\s+moment|"  # i18n-allow: French
+    r"recemment|recent\w*|derni(?:er|ere)s?(?!\s+fois)|actualite\w*|"  # i18n-allow: French
+    r"nouvelles|meteo|en\s+direct|statut|en\s+ligne|"  # i18n-allow: French speech input
+    # French "hier" (yesterday) only in an unmistakably French frame: alone it
+    # is the German "here" ("Was ist hier los?").  # i18n-allow: German example
+    r"(?:passe|arrive)\w*(?:\s+\w+){0,3}\s+hier|hier\s+(?:soir|matin|apres[\s-]midi))\b"  # i18n-allow
 )
 
 # Factual question/request shapes are deliberately narrower than the general
@@ -177,7 +191,7 @@ _CURRENT_RE = re.compile(
 # advice, how-to requests, private data, or connected data into web searches.
 _PUBLIC_FACT_QUESTION_RE = re.compile(
     r"^[\s¿¡]*(?:(?:hey|hello|hi|hallo|hola|okay|ok|jarvis|please|bitte|"
-    r"por favor)[\s,]+){0,3}(?:"
+    r"por favor|salut|bonjour|dis)[\s,]+){0,3}(?:"
     r"who\b|where\b|when\b|which\b|"
     r"what\s+(?:is|are|was|were|did|does|has|have)\b|"
     r"what\s+year\b|in\s+(?:what|which)\s+year\b|"
@@ -189,15 +203,21 @@ _PUBLIC_FACT_QUESTION_RE = re.compile(
     r"gross\w*|weit\w*)\b|"  # i18n-allow: speech input
     r"quien\b|donde\b|cuando\b|cual\w*\b|cuant\w*\b|"
     r"(?:en\s+)?que\s+ano\b|"
-    r"que\s+(?:es|son|fue|eran|hizo|hace|tiene|tienen)\b"
+    r"que\s+(?:es|son|fue|eran|hizo|hace|tiene|tienen)\b|"
+    r"qui\b|quand\b|quel\w*\b|combien\b|"  # i18n-allow: French speech input
+    r"ou\s+(?:est|sont|se\s+trouve\w*)\b|(?:en\s+)?quelle\s+annee\b|"  # i18n-allow: French
+    r"qu['’]?\s?est[\s-]ce\s+(?:que|qui)\b|"  # i18n-allow: French speech input
+    r"que\s+s['’]?\s?est[\s-]il\b|c['’]?\s?est\s+quoi\b"  # i18n-allow: French
     r")"  # i18n-allow: multilingual speech-input matching data
 )
 _PUBLIC_FACT_REQUEST_RE = re.compile(
     r"^[\s¿¡]*(?:(?:hey|hello|hi|hallo|hola|okay|ok|jarvis|please|bitte|"
-    r"por favor)[\s,]+){0,3}(?:"
+    r"por favor|salut|bonjour|dis)[\s,]+){0,3}(?:"
     r"tell me|give me|look up|search(?: for)?|check|find|"
     r"sag mir|nenne mir|such\w*|pruef\w*|find\w*|"
-    r"dime|busca|revisa|encuentra"
+    r"dime|busca|revisa|encuentra|"
+    r"dis[\s-]moi|donne[\s-]moi|cherche|recherche|regarde|verifie|trouve|"  # i18n-allow: French
+    r"(?:tu\s+as|t['’]?\s?as)\s+(?:pas\s+)?vu|as[\s-]tu\s+vu"  # i18n-allow: French
     r")\b"  # i18n-allow: multilingual speech-input matching data
 )
 
@@ -328,6 +348,35 @@ _MISSION_RE = re.compile(
     r"background task\w*|subagent\w*|sub-agent\w*|"
     r"hintergrund\w*|agente\w*|mision\w*)\b"  # i18n-allow: multilingual speech-input matching data
 )
+# A mission with a proper name or a space qualifier is public news, never one
+# of the assistant's own missions: "la mission Artemis II", "the Apollo
+# mission", "Artemis-II-Mission", "mission spatiale". Matched on the ORIGINAL
+# text, because only the capital tells a name from an ordinary word
+# (BC-250 2026-10-29: the latest news "de la mission Artemis II" was graded an
+# agent-mission question and never searched).
+_PUBLIC_MISSION_RE = re.compile(
+    # "mission Artemis", "Mission Apollo", "mission spatiale Artemis"
+    r"\b[Mm]issions?\s+(?:spatiale\s+|lunaire\s+)?(?:NASA\s+|ESA\s+)?[A-Z][a-z]\w*"
+    # "Artemis II mission", "Apollo 11 mission", "Artemis-II-Mission"
+    r"|\b[A-Z][a-z]\w*[\s-]+(?:[IVX]+|\d+)[\s-]+[Mm]ission\w*"
+    # "Apollo-Mission", "the Apollo mission"
+    r"|\b[A-Z][a-z]\w*-[Mm]ission\w*|\b[Tt]he\s+[A-Z][a-z]\w*\s+mission\w*"
+    # a space qualifier names a public mission on its own
+    r"|\b(?:[Mm]issions?\s+spatiales?|[Ss]pace\s+missions?|[Ll]unar\s+missions?|"
+    r"\w*[Rr]aumfahrtmission\w*|\w*[Mm]ondmission\w*|[Mm]isi[oó]n(?:es)?\s+espacial\w*)\b"  # i18n-allow: speech input
+)
+
+
+def _mentions_assistant_mission(raw_text: str) -> bool:
+    """True when the text asks about the assistant's own missions or agents.
+
+    Named public missions are removed first, so a news question about one is
+    not graded as private mission state.
+    """
+    remainder = _PUBLIC_MISSION_RE.sub(" ", str(raw_text or ""))
+    return bool(_MISSION_RE.search(_normalize(remainder)))
+
+
 _SKILL_RE = re.compile(
     r"\b(?:skill\w*|macro\w*|faehigkeit\w*|makro\w*|habilidad\w*)\b"  # i18n-allow: speech input
 )
@@ -442,7 +491,9 @@ _WELLBEING_RE = re.compile(
     r"\bhow are you(?: doing| feeling)?(?:\s+(?:today|now|right now))?\b|"
     r"\bhow(?:'s| is) it going(?:\s+(?:today|now))?\b|"
     r"\bwhat(?:'s| is) up(?:\s+(?:today|now))?\b|"
-    r"\b(?:que tal|como estas)(?:\s+(?:hoy|ahora))?\b"
+    r"\b(?:que tal|como estas)(?:\s+(?:hoy|ahora))?\b|"
+    r"\b(?:comment\s+(?:ca\s+va|vas[\s-]tu|allez[\s-]vous|tu\s+vas)|ca\s+va)"  # i18n-allow: French
+    r"(?:\s+(?:aujourd\W?\s?hui|maintenant|en\s+ce\s+moment))?\b"  # i18n-allow: French
 )
 _ASSISTANT_DAYPLAN_RE = re.compile(
     # i18n-allow: multilingual speech-input matching data
@@ -491,7 +542,13 @@ _DATE_TRIVIA_RE = re.compile(
     r"\bwhat (?:day|date) (?:today|tomorrow|yesterday) (?:is|was)\b|"
     r"\bwhat is (?:today|tomorrow|yesterday)(?:'s)? (?:day|date|for day)\b|"
     r"\bwhat(?:'s| is) the (?:date|day)\b(?: (?:today|tomorrow)\b)?|"
-    r"\bque dia es (?:hoy|manana)\b|\ba que fecha estamos\b"
+    r"\bque dia es (?:hoy|manana)\b|\ba que fecha estamos\b|"
+    r"\b(?:on\s+est|nous\s+sommes|c['\u2019]?\s?est)\s+quel\s+jour"  # i18n-allow: French
+    r"(?:\s+(?:aujourd\W?\s?hui|demain|hier))?\b|"  # i18n-allow: French
+    r"\bquel(?:le)?\s+(?:jour|date)\s+(?:sommes[\s-]nous|on\s+est|est[\s-]on|"  # i18n-allow: French
+    r"(?:est|etait|sera)[\s-]ce|(?:est|etait|sera)\s+[a-z]+)\b|"  # i18n-allow: French
+    r"\b(?:la\s+)?date\s+(?:d['\u2019]?\s?)?(?:aujourd\W?\s?hui|de\s+demain)\b|"  # i18n-allow: French
+    r"\bquelle\s+heure\s+(?:est[\s-]il|il\s+est)\b|\bil\s+est\s+quelle\s+heure\b"  # i18n-allow: French
 )
 
 _FOLLOW_UP_REFERENCE_RE = re.compile(
@@ -760,8 +817,8 @@ def is_contextual_follow_up(text: str, context: Sequence[str]) -> bool:
 # the planner (``remember`` is a save verb) although the user is asking, not
 # ordering. Kept next to the lookup regex so ``is_lookup_shape`` covers both.
 _RECALL_QUESTION_RE = re.compile(
-    r"(?:do you (?:remember|know|recall)|weisst du(?: noch)?|"  # i18n-allow: speech input
-    r"erinnerst du dich|kennst du|te acuerdas|recuerdas|sabes)"  # i18n-allow: speech input
+    r"\b(?:do you (?:remember|know|recall)|weisst du(?: noch)?|"  # i18n-allow: speech input
+    r"erinnerst du dich|kennst du|te acuerdas|recuerdas|sabes)\b"  # i18n-allow: speech input
 )
 
 
@@ -1036,7 +1093,7 @@ def plan_turn(
         and not (deliberative or opinion)
     ):
         reasons.add(TurnReason.CURRENT_DATA)
-    if _MISSION_RE.search(normalized) and not definition:
+    if _mentions_assistant_mission(text) and not definition:
         reasons.add(TurnReason.MISSION)
     if _SKILL_RE.search(normalized) and not definition:
         reasons.add(TurnReason.SKILL)
@@ -1098,7 +1155,7 @@ def plan_turn(
         if _CURRENT_RE.search(context_normalized):
             reasons.add(TurnReason.CURRENT_DATA)
             inherited = True
-        if _MISSION_RE.search(context_normalized):
+        if _mentions_assistant_mission(context_text):
             reasons.add(TurnReason.MISSION)
             inherited = True
         if _SKILL_RE.search(context_normalized):

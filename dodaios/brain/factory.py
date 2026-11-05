@@ -134,6 +134,10 @@ ROUTER_TOOLS = frozenset({
     # neuen Skill …" had no authoring tool at all and died on `jarvisctl
     # --help` rounds. See ADR-0011 amendment "create-skill router tool".
     "create-skill",
+    # Personal memory vault (ADR-0044): search beyond the always-on memory
+    # block, and erase a memory when the user asks. Router-tier only.
+    "memory-search",
+    "memory-forget",
     # Phase B5 (recall-tool): read-only keyword search over the long-term
     # Obsidian wiki vault. Router-tier only — never in SUB_TOOLS (AP-D9).
     # The brain calls this when the user asks "what do we know about X" or
@@ -923,7 +927,8 @@ def _phase2_full_brain(
     cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
     core_memory = CoreMemory.load(cfg.DATA_DIR / CORE_MEMORY_FILENAME)
     recall = RecallStore(cfg.DATA_DIR / "jarvis.db")
-    MessageRecorder(recall).attach(bus)
+    recorder = MessageRecorder(recall)
+    recorder.attach(bus)
 
     workspace = Workspace.ensure(cfg.DATA_DIR / "workspace")
     user_profile: UserProfile | None
@@ -1395,6 +1400,7 @@ def _phase2_full_brain(
                 from dodaios.brain.wiki_context import WikiContextInjector
                 manager._wiki_injector = WikiContextInjector(search=None)
 
+    manager.own_message_recorder(recorder, bus)
     return manager
 
 
@@ -1425,7 +1431,8 @@ def _legacy_full_brain(bus: Any | None = None) -> Any:
     cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
     core_memory = CoreMemory.load(cfg.DATA_DIR / CORE_MEMORY_FILENAME)
     recall = RecallStore(cfg.DATA_DIR / "jarvis.db")
-    MessageRecorder(recall).attach(bus)
+    recorder = MessageRecorder(recall)
+    recorder.attach(bus)
 
     workspace = Workspace.ensure(cfg.DATA_DIR / "workspace")
     user_profile: UserProfile | None
@@ -1554,6 +1561,7 @@ def _legacy_full_brain(bus: Any | None = None) -> Any:
         except Exception as exc:  # noqa: BLE001 — capture is never load-bearing
             log.warning("ProfileCaptureBridge could not be started: %s", exc)
 
+    manager.own_message_recorder(recorder, bus)
     return manager
 
 

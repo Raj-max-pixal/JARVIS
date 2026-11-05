@@ -327,6 +327,7 @@
     "jarvisx": "Dodaios X",
     "marketplace": "Marketplace",
     "agentic_ide": "Agentic IDE",
+    "verse": "Verse",
     "agentic_ide_beta": "Beta",
     "voice": "Voz de {name}",
     "voice_shortcuts": "Atalhos",
@@ -1549,6 +1550,7 @@
     "err_pending_publisher": "Esta ligação aguarda configuração por parte do editor. Tenta novamente quando o início de sessão no browser estiver disponível.",
     "connection_unavailable": "Ligação indisponível",
     "unsupported_device": "Não suportado neste dispositivo",
+    "cli_precedence": "{cli} está ligado e é usado primeiro; menciona o plugin de {plugin} para o usar.",
     "installed_count": "{count} instalados",
     "attention_one": "É preciso voltar a ligar {plugin}",
     "attention_many": "É preciso voltar a ligar {count} ligações",
@@ -7520,6 +7522,7 @@
       "status_needs_you": "Precisa de você",
       "status_waiting": "Esperando por você",
       "preview_needs_you": "Precisa de você",
+      "sign_in_site": "um site",
       "preview_draft": "Rascunho:",
       "preview_working": "Trabalhando…",
       "time_now": "agora",
@@ -7594,6 +7597,36 @@
     "storage_failed": "Não foi possível guardar o token de forma segura. Tenta novamente.",
     "request_busy": "Este token já está a ser verificado. Aguarda e tenta novamente.",
     "failed": "Não foi possível guardar a credencial."
+  },
+  "login_card": {
+    "title": "Entrar em {site}",
+    "subtitle": "Abre um formulário seguro",
+    "open": "Abrir",
+    "username": "Utilizador ou e-mail",
+    "password": "Palavra-passe",
+    "footer": "Guardado em segurança. {agent} nunca o vê; o navegador só o escreve em {host}.",
+    "save": "Guardar",
+    "decline": "Agora não",
+    "close": "Fechar",
+    "saved": "Início de sessão de {site} guardado",
+    "declined": "Início de sessão de {site} não fornecido",
+    "invalid": "Introduz o utilizador ou e-mail e a palavra-passe.",
+    "storage_failed": "Não foi possível guardar o início de sessão em segurança. Tenta novamente.",
+    "failed": "Não foi possível guardar o início de sessão."
+  },
+  "connect_card": {
+    "title": "Ligar {label}",
+    "subtitle": "{agent} precisa disto para continuar",
+    "connect": "Ligar",
+    "connecting": "A ligar…",
+    "not_now": "Agora não",
+    "waiting": "Conclui o início de sessão; o cartão atualiza-se sozinho",
+    "code": "Introduz o código {code} na página de início de sessão",
+    "open_again": "Abrir novamente a página de início de sessão",
+    "timeout": "Ainda sem ligação. Carrega em Ligar para tentar novamente.",
+    "failed": "Não foi possível ligar {label}. Tenta novamente.",
+    "connected": "{label} ligado",
+    "declined": "{label} não ligado"
   },
   "question_card": {
     "aria": "Pergunta do agente",
@@ -7706,6 +7739,8 @@
     "steps_so_far": "{summary}, {count} passos até agora",
     "subagents_working_one": "{count} subagente a trabalhar",
     "subagents_working_other": "{count} subagentes a trabalhar",
+    "waiting_background_one": "À espera de {count} tarefa em segundo plano",
+    "waiting_background_other": "À espera de {count} tarefas em segundo plano",
     "files_changed_one": "{count} ficheiro alterado",
     "files_changed_other": "{count} ficheiros alterados",
     "changed_files": "Ficheiros alterados",
@@ -10195,6 +10230,15 @@
     "signin_not_yet": "— instalar ainda não liga nada."
   },
   "ide_threads": {
+    "header": {
+      "label": "Thread: {thread}",
+      "review_changes": "Revisar alterações",
+      "show_in_git": "Mostrar alterações no Git",
+      "more": "Mais ações para {thread}",
+      "maximize": "Ocultar a barra lateral",
+      "restore": "Mostrar a barra lateral",
+      "close": "Fechar thread (vai para o arquivo)"
+    },
     "layout_aria": "Disposição do IDE",
     "layout_grid": "Grelha de terminais",
     "layout_threads": "Threads",
@@ -10248,6 +10292,9 @@
     "count_failed": "{count} falharam",
     "subagents_aria": "Subagentes",
     "main_thread": "Thread principal",
+    "show_subagents": "Mostrar {count} subagentes de “{title}”",
+    "hide_subagents": "Ocultar os subagentes de “{title}”",
+    "subagents_of": "Subagentes de {title}",
     "in_background": "Em segundo plano",
     "task": "Tarefa",
     "task_from": "Tarefa de {parent}",
@@ -10319,7 +10366,11 @@
     "send_message": "Enviar mensagem",
     "queue_title": "Pôr em fila para quando o agente terminar",
     "copy_message": "Copiar mensagem",
-    "scroll_newest": "Ir para a mensagem mais recente"
+    "scroll_newest": "Ir para a mensagem mais recente",
+    "open_side_by_side": "Abrir ao lado",
+    "drop_side_by_side": "Largue para abrir ao lado",
+    "drop_replace": "Largue para substituir este thread",
+    "close_column": "Fechar {target}"
   },
   "ide_view": {
     "split_right": "Direita",

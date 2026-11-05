@@ -257,7 +257,7 @@ dependencies = [
     # IDE's drop analysis: pypdf is the one non-stdlib parser those need, and
     # it is a pure-Python universal wheel. Lazy-imported, with honest
     # per-file degradation when absent.
-    "pypdf>=6.21.2",  # security floor: parser advisories fixed through 6.21.2
+    "pypdf>=6.21.4",  # security floor: parser advisories fixed through 6.21.4
     # Phase F1 — Telegram channel bot via long-polling (ChannelAdapter).
     "python-telegram-bot>=22,<23",
 ]
@@ -421,13 +421,21 @@ desktop-macos = [
     # app process while source/dependencies remain in the managed checkout —
     # py2app is no longer a dependency, and the stub also links against
     # non-framework (uv standalone) interpreters that py2app never supported.
-    "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
-    "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",
-    "pyobjc-framework-Accessibility>=10; sys_platform == 'darwin'",
-    "pyobjc-framework-AVFoundation>=10; sys_platform == 'darwin'",
+    # PyObjC 13.0 is held back: its CoreMedia extension fails to load on
+    # Intel macOS 15 ("Library not loaded: @rpath/libswiftCoreMedia.dylib",
+    # no LC_RPATH; nightly CI from 2026-10-30, issue #1026). The wheels are
+    # universal2, so the cap is global rather than x86_64-only, and it caps
+    # pyobjc-core too: every 13.x framework requires pyobjc-core>=13, which
+    # keeps transitive frameworks such as CoreMedia (pulled in by
+    # AVFoundation) on 12.x as well. Lift it once a fixed 13.x ships.
+    "pyobjc-core>=10,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-Accessibility>=10,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-AVFoundation>=10,<13; sys_platform == 'darwin'",
     # Native per-window Computer-Use capture (SCScreenshotManager by
     # CGWindowID); runtime-probed — an absent framework degrades to rect grabs.
-    "pyobjc-framework-ScreenCaptureKit>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-ScreenCaptureKit>=10,<13; sys_platform == 'darwin'",
 ]
 # Local (offline) voice engines. Optional per the cloud-first doctrine
 # (CLAUDE.md §3): this extra ships with the advertised [full] profile (design
@@ -823,6 +831,9 @@ society-status = "dodaios.plugins.tool.delegate_to_agent:SocietyStatusTool"
 message-agent = "dodaios.plugins.tool.message_agent:LeadMessageAgentTool"
 # Skills-Brain-Integration — Brain-callable executor for installed user skills.
 run-skill = "dodaios.plugins.tool.run_skill:RunSkillTool"
+# Personal memory vault (ADR-0044) — search and forget (router-tier).
+memory-search = "dodaios.plugins.tool.memory_vault:MemorySearchTool"
+memory-forget = "dodaios.plugins.tool.memory_vault:MemoryForgetTool"
 # Phase B5 — long-term wiki recall (router-tier, read-only).
 wiki-recall = "dodaios.plugins.tool.wiki_recall:WikiRecallTool"
 # Phase B5 follow-up — full-page reader (router-tier, read-only).

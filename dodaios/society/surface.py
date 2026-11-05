@@ -51,10 +51,12 @@ from .capabilities import (
     tool_name_for_capability,
 )
 from .coding_threads import CodingThreadTool
+from .connect_tool import CONNECT_TOOL_NAME, RequestConnectTool
 from .conversation_tool import ConversationRecallTool, RoutineInvokeTool, RoutineListTool
 from .credential_tool import CREDENTIAL_TOOL_NAME, RequestCredentialTool
 from .display_name import LIVE, display_name, lead_display_name
 from .learning import RunLearnedSkillTool
+from .login_tool import LOGIN_TOOL_NAME, RequestLoginTool
 from .memory import resolve_society_vault
 from .roster import (
     PAIR_SESSION_MARKER,
@@ -340,6 +342,10 @@ def society_tools(cfg: Any, brain: Any, session: Any) -> dict[str, Tool]:
         tools[CREDENTIAL_TOOL_NAME] = cast(
             Tool, RequestCredentialTool(rt, agent_id, session_id=session_id)
         )
+        tools[LOGIN_TOOL_NAME] = cast(Tool, RequestLoginTool(rt, agent_id, session_id=session_id))
+        tools[CONNECT_TOOL_NAME] = cast(
+            Tool, RequestConnectTool(rt, agent_id, session_id=session_id)
+        )
     if rt.browser.is_installed() or rt.browser.live.model_resolver is not None:
         from .browser.tool import BrowserTool
 
@@ -356,7 +362,12 @@ def society_tools(cfg: Any, brain: Any, session: Any) -> dict[str, Tool]:
 
 
 #: Tools that ask the person themselves: a gate card in front of them would ask twice.
-_UNGATED: Final[tuple[str, ...]] = (ASK_USER_TOOL_NAME, CREDENTIAL_TOOL_NAME)
+_UNGATED: Final[tuple[str, ...]] = (
+    ASK_USER_TOOL_NAME,
+    CREDENTIAL_TOOL_NAME,
+    LOGIN_TOOL_NAME,
+    CONNECT_TOOL_NAME,
+)
 
 #: Argument keys that name WHAT a mixed-action tool does (``gmail: send``).
 _VERB_KEYS: Final[tuple[str, ...]] = ("action", "operation", "method", "command", "mode")
@@ -662,8 +673,9 @@ def _contained_folder_tools(workspace: Path, permission_mode: str) -> dict[str, 
 
 
 def _workspace_fallback(cfg: Any, agent_id: str) -> Path:
-    data_dir = Path(getattr(getattr(cfg, "memory", None), "data_dir", None) or "data")
-    return data_dir / "society" / agent_id / "workspace"
+    from dodaios.core.config import memory_data_dir
+
+    return memory_data_dir(cfg) / "society" / agent_id / "workspace"
 
 
 def _permission_override(runtime: Any, session: Any) -> str:
@@ -900,17 +912,38 @@ async def _credential_line(rt: Any, agent_id: str) -> str:
     from .credentials import vault_for
 
     try:
-        rows = await asyncio.to_thread(vault_for(rt.data_dir).list, agent_id)
+        vault = vault_for(rt.data_dir)
+        rows = await asyncio.to_thread(vault.list, agent_id)
+        logins = await asyncio.to_thread(vault.list_logins, agent_id)
     except Exception:  # noqa: BLE001 — an unreadable index costs this line, not the turn
         log.warning("society: credential index unavailable for %s", agent_id, exc_info=True)
         return ""
     if not rows:
-        return "\nStored credentials: none."
-    names = ", ".join(f"{row.env} ({row.label})" if row.label else row.env for row in rows)
-    return (
-        "\nStored credentials, set as environment variables in society_shell (values are "
-        f"never shown to you): {names}."
-    )
+        line = "\nStored credentials: none."
+    else:
+        names = ", ".join(f"{row.env} ({row.label})" if row.label else row.env for row in rows)
+        line = (
+            "\nStored credentials, set as environment variables in society_shell (values are "
+            f"never shown to you): {names}."
+        )
+    if logins:
+        from .login_tool import username_hint
+
+        users = {
+            info.key: await asyncio.to_thread(vault.public_username, agent_id, info.key)
+            for info in logins
+        }
+        sites = "; ".join(
+            f"{info.label} on {info.domain}: username {username_hint(info, users[info.key])}, "
+            f"password <secret>{info.placeholders[1]}</secret>"
+            for info in logins
+        )
+        line += (
+            "\nStored website logins, typed only by society_browser on their own site (write "
+            f"the placeholders literally in the browser task; values are never shown to you): "
+            f"{sites}."
+        )
+    return line
 
 
 # ------------------------------------------------------------------ briefing

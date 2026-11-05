@@ -153,7 +153,7 @@ def test_ui_bundle_check_builds_a_missing_bundle_with_npm(
     dist = tmp_path / "dodaios" / "ui" / "web" / "dist"
     calls: list[list[str]] = []
 
-    def fake_build(cmd, *, label, cwd=None, timeout=None):
+    def fake_build(cmd, *, label, cwd=None, timeout=None, env=None):
         calls.append(cmd[1:])
         if cmd[1:] == ["run", "build"]:
             (dist / "assets").mkdir(parents=True)
@@ -172,12 +172,66 @@ def test_ui_bundle_check_builds_a_missing_bundle_with_npm(
 
 
 def test_ui_bundle_check_without_npm_reports_a_missing_bundle(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     monkeypatch.setattr(installer, "repo_root", lambda: tmp_path)
     monkeypatch.setattr(installer.shutil, "which", lambda name: None)
 
     assert installer.step_ui_bundle_check() is False
+    out = capsys.readouterr().out
+    assert "Node.js/npm is not installed" in out
+
+
+def test_ui_bundle_check_reports_npm_nonzero_exit_and_stderr_tail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    frontend = tmp_path / "dodaios" / "ui" / "web" / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    stderr_lines = "\n".join(f"npm-err-{idx}" for idx in range(20))
+
+    def fake_build(cmd, *, label, cwd=None, timeout=None, env=None):
+        if cmd[1:] == ["run", "build"]:
+            return subprocess.CompletedProcess(
+                cmd, 2, "vite build started\n", stderr_lines
+            )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(installer, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(installer.shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(installer, "run_captured", fake_build)
+
+    assert installer.step_ui_bundle_check() is False
+    out = capsys.readouterr().out
+    assert "Node.js/npm is not installed" not in out
+    assert "npm run build" in out
+    assert "exit code 2" in out
+    assert "npm-err-19" in out
+    assert "npm-err-0" not in out
+
+
+def test_ui_bundle_check_reports_incomplete_build_output_when_index_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    frontend = tmp_path / "dodaios" / "ui" / "web" / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package-lock.json").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(installer, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(installer.shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(
+        installer,
+        "run_captured",
+        lambda cmd, *, label, cwd=None, timeout=None, env=None: subprocess.CompletedProcess(
+            cmd, 0, "", ""
+        ),
+    )
+
+    assert installer.step_ui_bundle_check() is False
+    out = capsys.readouterr().out
+    assert "Node.js/npm is not installed" not in out
+    assert "build output is incomplete" in out
+    assert "index.html" in out
 
 
 def test_desktop_registration_failure_is_install_failure(
@@ -287,3 +341,59 @@ def test_macos_launch_survives_missing_editable_import(
 
     out = capsys.readouterr().out
     assert "/usr/bin/open -a Dodaios" in out
+
+
+def _failing_build(monkeypatch, tmp_path: Path, stdout: str, stderr: str) -> list[dict]:
+    frontend = tmp_path / "dodaios" / "ui" / "web" / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    envs: list[dict] = []
+
+    def fake_build(cmd, *, label, cwd=None, timeout=None, env=None):
+        envs.append(env)
+        if cmd[1:] == ["run", "build"]:
+            return subprocess.CompletedProcess(cmd, 134, stdout, stderr)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(installer, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(installer.shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(installer, "run_captured", fake_build)
+    return envs
+
+
+def test_ui_build_failure_keeps_the_fatal_header_above_a_long_stack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """#1033: a V8 abort prints its reason first, then a 50-frame native stack."""
+    stack = "\n".join(
+        f"{idx}: 0x10679d540 node::Frame{idx}() [libnode.dylib]" for idx in range(53)
+    )
+    stderr = (
+        "<--- Last few GCs --->\n"
+        "FATAL ERROR: Ineffective mark-compacts near heap limit "
+        "Allocation failed - JavaScript heap out of memory\n"
+        + stack
+        + "\nsh: line 1: 13287 Abort trap: 6           vite build --outDir ../dist\n"
+    )
+    _failing_build(monkeypatch, tmp_path, "vite v7 building for production...\n", stderr)
+
+    assert installer.step_ui_bundle_check() is False
+    out = capsys.readouterr().out
+    assert "exit code 134" in out
+    assert "JavaScript heap out of memory" in out
+    assert "Abort trap: 6" in out
+    assert "node::Frame52()" in out
+    assert "node::Frame5()" not in out  # the middle of the stack stays out
+
+
+def test_ui_build_raises_the_node_heap_unless_the_user_set_node_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+    envs = _failing_build(monkeypatch, tmp_path, "", "boom")
+    installer.step_ui_bundle_check()
+    assert envs
+    assert all(env["NODE_OPTIONS"] == installer.UI_BUILD_NODE_OPTIONS for env in envs)
+
+    monkeypatch.setenv("NODE_OPTIONS", "--max-old-space-size=8192")
+    assert installer._ui_build_env()["NODE_OPTIONS"] == "--max-old-space-size=8192"

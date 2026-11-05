@@ -71,8 +71,10 @@ __all__ = [
 #: outside a turn, ``""`` inside one before the language is known.
 TURN_LANGUAGE: ContextVar[str | None] = ContextVar("jarvis.turn_language", default=None)
 
-#: The codes an explicit ``brain.reply_language`` pin may carry (``"auto"`` is
-#: deliberately absent — it means "no pin, mirror the input").
+#: The codes an explicit ``brain.reply_language`` pin may carry when that pin
+#: also selects translated system phrases (``"auto"`` is deliberately absent —
+#: it means "no pin, mirror the input"). French is a speech pin without a
+#: catalog; it lives on the brain's reply-language set, not here.
 _REPLY_PINS: frozenset[str] = frozenset(SUPPORTED_LOCALES)
 
 #: A turn with at most this many word tokens is a "thin" turn — a one- or
@@ -728,7 +730,7 @@ def _has_language_switch_evidence(text: str, detected: str) -> bool:
     language without translated phrases carries its own evidence: the
     detector only names it on several matching words or its own script.
     """
-    if detected not in _REPLY_PINS:
+    if detected not in SUPPORTED_LOCALES:
         return detected != "unknown" and _detect_other_language(text or "")[0] == detected
     tokens = {token.lower() for token in _TOKEN_RE.findall(text or "")}
     scores = {code: len(tokens & vocabulary) for code, vocabulary in _SETS}

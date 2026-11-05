@@ -18411,7 +18411,7 @@ class SpeechPipeline:
     }
 
     _BCP47: dict[str, str] = {
-        "de": "de-DE", "en": "en-US", "es": "es-ES", "pt": "pt-PT",
+        "de": "de-DE", "en": "en-US", "es": "es-ES", "pt": "pt-PT", "fr": "fr-FR",
     }
 
     @classmethod
@@ -18445,6 +18445,10 @@ class SpeechPipeline:
         if pin is None:
             cfg = getattr(self, "_config", None)
             pin = getattr(getattr(cfg, "brain", None), "reply_language", None)
+        # French is a spoken pin without a translated phrase catalog. Canned
+        # phrases still fall back to English; the TTS voice follows the pin.
+        if str(pin or "").strip().lower() == "fr":
+            return "fr"
         # Conversation stickiness: a thin interjection ("Now") inherits the
         # running conversation language instead of flipping ack/phrases/TTS
         # (forensic 2026-06-18). The brain owns the sticky conversation language.

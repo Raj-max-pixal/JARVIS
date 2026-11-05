@@ -327,6 +327,7 @@
     "jarvisx": "Dodaios X",
     "marketplace": "Marketplace",
     "agentic_ide": "Agentic IDE",
+    "verse": "Verse",
     "agentic_ide_beta": "Beta",
     "voice": "{name} Stimme",
     "voice_shortcuts": "Tastenkürzel",
@@ -1549,6 +1550,7 @@
     "err_pending_publisher": "Diese Verbindung wartet noch auf die Einrichtung durch den Herausgeber. Versuche es erneut, sobald die Browser-Anmeldung verfügbar ist.",
     "connection_unavailable": "Verbindung nicht verfügbar",
     "unsupported_device": "Auf diesem Gerät nicht unterstützt",
+    "cli_precedence": "{cli} ist verbunden und wird zuerst genutzt; nenne das {plugin}-Plugin, um es zu verwenden.",
     "installed_count": "{count} installiert",
     "attention_one": "{plugin} muss neu verbunden werden",
     "attention_many": "{count} Verbindungen müssen neu verbunden werden",
@@ -7520,6 +7522,7 @@
       "status_needs_you": "Braucht dich",
       "status_waiting": "Wartet auf dich",
       "preview_needs_you": "Braucht dich",
+      "sign_in_site": "einer Website",
       "preview_draft": "Entwurf:",
       "preview_working": "Arbeitet…",
       "time_now": "jetzt",
@@ -7594,6 +7597,36 @@
     "storage_failed": "Der Token konnte nicht sicher gespeichert werden. Bitte versuche es erneut.",
     "request_busy": "Dieser Token wird bereits geprüft. Warte kurz und versuche es dann erneut.",
     "failed": "Die Zugangsdaten konnten nicht gespeichert werden."
+  },
+  "login_card": {
+    "title": "Bei {site} anmelden",
+    "subtitle": "Öffnet ein sicheres Formular",
+    "open": "Öffnen",
+    "username": "Benutzername oder E-Mail",
+    "password": "Passwort",
+    "footer": "Sicher gespeichert. {agent} sieht es nie; der Browser tippt es nur auf {host} ein.",
+    "save": "Speichern",
+    "decline": "Nicht jetzt",
+    "close": "Schließen",
+    "saved": "{site}-Login gespeichert",
+    "declined": "{site}-Login nicht angegeben",
+    "invalid": "Gib den Benutzernamen oder die E-Mail und das Passwort ein.",
+    "storage_failed": "Der Login konnte nicht sicher gespeichert werden. Bitte versuche es erneut.",
+    "failed": "Der Login konnte nicht gespeichert werden."
+  },
+  "connect_card": {
+    "title": "{label} verbinden",
+    "subtitle": "{agent} braucht das, um weiterzumachen",
+    "connect": "Verbinden",
+    "connecting": "Verbinde…",
+    "not_now": "Nicht jetzt",
+    "waiting": "Schließ die Anmeldung ab, die Karte aktualisiert sich selbst",
+    "code": "Gib auf der Anmeldeseite den Code {code} ein",
+    "open_again": "Anmeldeseite erneut öffnen",
+    "timeout": "Noch keine Verbindung. Drück auf Verbinden, um es erneut zu versuchen.",
+    "failed": "{label} konnte nicht verbunden werden. Versuch es erneut.",
+    "connected": "{label} verbunden",
+    "declined": "{label} nicht verbunden"
   },
   "question_card": {
     "aria": "Rückfrage des Agenten",
@@ -7706,6 +7739,8 @@
     "steps_so_far": "{summary}, bisher {count} Schritte",
     "subagents_working_one": "{count} Sub-Agent arbeitet",
     "subagents_working_other": "{count} Sub-Agenten arbeiten",
+    "waiting_background_one": "Wartet auf {count} Hintergrund-Aufgabe",
+    "waiting_background_other": "Wartet auf {count} Hintergrund-Aufgaben",
     "files_changed_one": "{count} Datei geändert",
     "files_changed_other": "{count} Dateien geändert",
     "changed_files": "Geänderte Dateien",
@@ -10195,6 +10230,15 @@
     "signin_not_yet": "— die Installation verbindet noch nichts."
   },
   "ide_threads": {
+    "header": {
+      "label": "Thread: {thread}",
+      "review_changes": "Änderungen prüfen",
+      "show_in_git": "Änderungen in Git zeigen",
+      "more": "Weitere Aktionen für {thread}",
+      "maximize": "Seitenleiste ausblenden",
+      "restore": "Seitenleiste einblenden",
+      "close": "Thread schließen (kommt ins Archiv)"
+    },
     "layout_aria": "IDE-Layout",
     "layout_grid": "Terminal-Raster",
     "layout_threads": "Threads",
@@ -10248,6 +10292,9 @@
     "count_failed": "{count} fehlgeschlagen",
     "subagents_aria": "Sub-Agents",
     "main_thread": "Haupt-Thread",
+    "show_subagents": "{count} Sub-Agents von „{title}“ zeigen",
+    "hide_subagents": "Sub-Agents von „{title}“ ausblenden",
+    "subagents_of": "Sub-Agents von {title}",
     "in_background": "Im Hintergrund",
     "task": "Aufgabe",
     "task_from": "Aufgabe von {parent}",
@@ -10319,7 +10366,11 @@
     "send_message": "Nachricht senden",
     "queue_title": "Einreihen, bis der Agent fertig ist",
     "copy_message": "Nachricht kopieren",
-    "scroll_newest": "Zur neuesten Nachricht scrollen"
+    "scroll_newest": "Zur neuesten Nachricht scrollen",
+    "open_side_by_side": "Daneben öffnen",
+    "drop_side_by_side": "Loslassen, um daneben zu öffnen",
+    "drop_replace": "Loslassen, um diesen Thread zu ersetzen",
+    "close_column": "{target} schließen"
   },
   "ide_view": {
     "split_right": "Rechts",
