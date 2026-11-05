@@ -1,0 +1,81 @@
+[profile]
+name = "default"
+language = "en"
+
+[trigger]
+wake_word_enabled = true
+single_turn_mode = false
+
+[trigger.wake_word]
+phrase = "Amala"
+engine = "auto"
+language = "en"
+
+[stt]
+provider = "faster-whisper"
+provider_user_selected = true
+fallback = ""
+model = "base"
+device = "cpu"
+compute_type = "int8"
+wake_model = "base"
+wake_device = "cpu"
+wake_compute_type = "int8"
+language = "en"
+
+[tts]
+provider = "piper-local"
+fallback = "piper-local"
+language_code = "en-US"
+streaming = true
+allow_sapi5_fallback = true
+
+[brain]
+primary = "codex"
+deep_brain = "codex"
+routing_provider = "codex"
+routing_model = "gpt-5.6-luna"
+local_fallback = "codex"
+local_fallback_model = "gpt-5.6-luna"
+reply_language = "en"
+
+[brain.providers.codex]
+model = "gpt-5.6-luna"
+deep_model = "gpt-5.6-luna"
+
+[brain.providers.ollama]
+model = "qwen3:1.7b"
+deep_model = "qwen3:4b"
+tool_model = "qwen3:4b"
+base_url = "http://127.0.0.1:11434"
+autostart = true
+
+[audio]
+input_device = "auto"
+output_device = "auto"
+echo_cancellation = true
+sample_rate = 16000
+
+[ui]
+tray_enabled = true
+startup_chime = true
+orb_style = "jarvis_bar"
+bar_persistent = true
+
+[autostart]
+enabled = true
+start_minimized = false
+background_only = false
+
+[computer_use]
+enabled = true
+screen_indicator = true
+strict_verify = true
+
+[local_action]
+enabled = true
+
+[memory]
+recall_store = "sqlite"
+archival_store = "sqlite"
+data_dir = "./data"
