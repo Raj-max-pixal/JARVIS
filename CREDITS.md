@@ -10,7 +10,8 @@ Amala is a customized profile built on the work of open-source projects, model p
 
 ## AI and coding providers
 
-- **OpenAI Codex and ChatGPT** provide the configured Amala reasoning backend through the user's existing authenticated Codex/ChatGPT access. OpenAI services, models and trademarks remain subject to OpenAI's terms.
+- **OpenAI Codex and ChatGPT** provide the default configured Amala reasoning backend through the user's existing authenticated Codex/ChatGPT access. OpenAI services, models and trademarks remain subject to OpenAI's terms.
+- **Google Gemini** is available as an optional brain, speech-recognition and speech-synthesis provider. Gemini services, models and trademarks remain subject to Google's terms.
 - **Claude Code, OpenCode and other supported coding-agent CLIs** can be connected through Dodaios. Each tool remains subject to its publisher's license and service terms.
 - **Ollama** is supported as an optional local-model server. Individual model weights have their own licenses and usage terms.
 

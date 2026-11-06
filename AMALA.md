@@ -42,6 +42,25 @@ The script backs up an existing `dodaios.toml`, copies the safe example profile,
 - Connect services such as GitHub, mail, calendars, messaging, music and home automation after the user authorizes each integration.
 - Apply risk checks and request approval before sensitive actions.
 
+## AI and voice profiles
+
+| Profile | Brain | Voice input | Voice output | Requirement |
+|---|---|---|---|---|
+| Codex | ChatGPT/Codex login | Offline Faster Whisper | Offline Piper | Logged-in Codex CLI |
+| OpenAI | OpenAI API | OpenAI transcription with offline fallback | Offline Piper | OpenAI API key |
+| Gemini | Gemini API | Gemini transcription with offline fallback | Gemini Flash TTS with offline fallback | Gemini API key |
+| Ollama | Local Ollama model | Offline Faster Whisper | Offline Piper | Healthy Ollama server and downloaded model |
+
+Switch profiles without storing a key in GitHub:
+
+```powershell
+.\install\amala-provider.ps1 -Provider OpenAI
+.\install\amala-provider.ps1 -Provider Gemini
+.\install\amala-provider.ps1 -Provider Ollama
+.\install\amala-provider.ps1 -Provider Codex
+```
+
+The switcher backs up the current configuration. Enter OpenAI or Gemini credentials only through Dodaios Settings/Windows Credential Manager, then restart Dodaios from its desktop Restart action.
 ## Requirements and limitations
 
 - Voice wake requires a microphone input endpoint visible to Windows. Microphone privacy permission cannot replace disconnected or disabled hardware.
