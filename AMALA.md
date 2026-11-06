@@ -54,3 +54,7 @@ The script backs up an existing `dodaios.toml`, copies the safe example profile,
 ## Private data policy
 
 Never commit API keys, OAuth tokens, `dodaios.toml`, credential files, conversations, memory databases, logs, screenshots, model weights or virtual environments. The committed `amala.toml.example` contains no secrets.
+
+## Credits
+
+See [CREDITS.md](CREDITS.md) for the AI, open-source and platform acknowledgements.

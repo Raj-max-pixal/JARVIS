@@ -48,7 +48,7 @@ your approval.
 
 This fork includes the **Amala** Windows voice-assistant profile: custom wake
 phrase, offline speech, Codex brain, computer control and autostart. See
-[AMALA.md](AMALA.md) for features and run `install/amala.ps1` after installation.
+[AMALA.md](AMALA.md) for features, [CREDITS.md](CREDITS.md) for acknowledgements, and run `install/amala.ps1` after installation.
 
 ## Install
 ```powershell
